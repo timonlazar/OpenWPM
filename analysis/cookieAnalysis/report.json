@@ -1,0 +1,38 @@
+[
+  {
+    "cookie_name": "_ga",
+    "cookie_domain": "example.com",
+    "name_category": "analytics",
+    "easyprivacy_domain_match": null,
+    "tracking_score": 70,
+    "likely_tracking": true,
+    "detection_method": "cookie-name"
+  },
+  {
+    "cookie_name": "_fbp",
+    "cookie_domain": "facebook.com",
+    "name_category": "ads",
+    "easyprivacy_domain_match": null,
+    "tracking_score": 70,
+    "likely_tracking": true,
+    "detection_method": "cookie-name"
+  },
+  {
+    "cookie_name": "sessionid",
+    "cookie_domain": "example.com",
+    "name_category": "unknown",
+    "easyprivacy_domain_match": null,
+    "tracking_score": 0,
+    "likely_tracking": false,
+    "detection_method": "unknown"
+  },
+  {
+    "cookie_name": "_gcl_au",
+    "cookie_domain": "shop.example",
+    "name_category": "analytics",
+    "easyprivacy_domain_match": null,
+    "tracking_score": 70,
+    "likely_tracking": true,
+    "detection_method": "cookie-name"
+  }
+]
