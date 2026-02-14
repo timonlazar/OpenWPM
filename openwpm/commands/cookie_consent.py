@@ -1,11 +1,10 @@
-# python
 from openwpm.commands.types import BaseCommand
 from selenium.webdriver.common.by import By
 from urllib.parse import urlparse
 import time
 import traceback
 
-from openwpm.commands.utils.cookieButton_rules import rules, commons
+from openwpm.commands.utils.cookieButton_rules import rules
 from openwpm.commands.utils.cookie_selectors import generate_xpaths
 
 
@@ -35,6 +34,11 @@ class AcceptCookieConsentCommand(BaseCommand):
                     print(f"[CookieConsent] TIMEOUT during CMP selectors | url={current_url} | runtime={runtime:.2f}s")
                     return
                 if self.try_click_fast(webdriver, xpath):
+                    # account for click_and_wait post-click sleep
+                    runtime = time.time() - start_time
+                    if runtime > MAX_RUNTIME:
+                        print(f"[CookieConsent] TIMEOUT after CMP click | url={current_url} | runtime={runtime:.2f}s")
+                        return
                     print(f"[CookieConsent] CMP selector matched | url={current_url} | xpath={xpath} | runtime={runtime:.2f}s")
                     return
 
@@ -44,7 +48,12 @@ class AcceptCookieConsentCommand(BaseCommand):
                     print(f"[CookieConsent] TIMEOUT during keyword fallback | url={current_url} | runtime={runtime:.2f}s")
                     return
                 if self.try_click_fast(webdriver, xpath):
-                    print(f"[CookieConsent] Keyword selector matched | url={current_url} | runtime={runtime:.2f}s")
+                    # account for click_and_wait post-click sleep
+                    runtime = time.time() - start_time
+                    if runtime > MAX_RUNTIME:
+                        print(f"[CookieConsent] TIMEOUT after keyword click | url={current_url} | runtime={runtime:.2f}s")
+                        return
+                    print(f"[CookieConsent] Keyword selector matched | url={current_url} | xpath={xpath} | runtime={runtime:.2f}s")
                     return
 
             if rule:
@@ -67,7 +76,7 @@ class AcceptCookieConsentCommand(BaseCommand):
 
     def find_matching_rule(self, domain):
         for rule_domain in rules:
-            if domain.endswith(rule_domain):
+            if domain == rule_domain or domain.endswith("." + rule_domain):
                 return rules[rule_domain]
         return None
 
@@ -101,7 +110,12 @@ class AcceptCookieConsentCommand(BaseCommand):
             return False, None
 
     def apply_domain_rule(self, webdriver, rule):
-        xpaths = rule.get("xpaths", generate_xpaths()) if isinstance(rule, dict) else generate_xpaths()
+        if isinstance(rule, dict):
+            rule_xpaths = rule.get("xpaths")
+            xpaths = rule_xpaths if rule_xpaths else generate_xpaths()
+        else:
+            # If rule is None or of an unexpected type, fall back to default xpaths
+            xpaths = generate_xpaths()
 
         # 1) Try Selenium-native clicks (with JS fallback) and wait after each click
         for xp in xpaths:
@@ -114,12 +128,12 @@ class AcceptCookieConsentCommand(BaseCommand):
                         if not el.is_displayed():
                             continue
                         try:
-                            print(f"[CookieConsent] Trying click | xpath={xp} for element {el.tag_name} with text '{el.text[:30]}'")
+                            print(f"[CookieConsent] Trying click | xpath={xp} for element {el.tag_name} with text '{el.text or ''[:30]}'")
                             clicked, method = self.click_and_wait(webdriver, el, prefer_js=False)
                             if clicked:
                                 return {"clicked": True, "xpath": xp, "method": method}
                         except Exception:
-                            print(f"[CookieConsent] Click failed, trying JS click | xpath={xp} for element {el.tag_name} with text '{el.text[:30]}'")
+                            print(f"[CookieConsent] Click failed, trying JS click | xpath={xp} for element {el.tag_name} with text '{el.text or ''[:30]}'")
                             clicked, method = self.click_and_wait(webdriver, el, prefer_js=True)
                             if clicked:
                                 return {"clicked": True, "xpath": xp, "method": method}
@@ -129,45 +143,64 @@ class AcceptCookieConsentCommand(BaseCommand):
                 continue
 
         # 2) Fallback: evaluate XPaths in-page via a safe single script with arguments
-        js_code = """
-        const xpaths = arguments[0];
-        for (const xp of xpaths) {
-          try {
-            const res = document.evaluate(xp, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-            const node = res && res.singleNodeValue;
-            if (node) {
-              if (typeof node.click === 'function') { node.click(); return {clicked: true, xpath: xp, method: 'js-eval'}; }
-              const ev = new MouseEvent('click', {bubbles: true, cancelable: true, view: window});
-              node.dispatchEvent(ev);
-              return {clicked: true, xpath: xp, method: 'js-event'};
+            js_code = """
+            const xpaths = arguments[0];
+            for (const xp of xpaths) {
+              try {
+                const res = document.evaluate(xp, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+                const node = res && res.singleNodeValue;
+                if (node) {
+                  // Visibility / interactability checks similar to Selenium's is_displayed():
+                  // - element is in the DOM
+                  // - computed style not display:none or visibility:hidden
+                  // - opacity > 0
+                  // - has non-zero bounding rect
+                  // - has an offsetParent (rough proxy for being rendered)
+                  const inDOM = document.documentElement.contains(node);
+                  const style = window.getComputedStyle(node);
+                  const rect = node.getBoundingClientRect();
+                  const visible = inDOM &&
+                                  style &&
+                                  style.display !== 'none' &&
+                                  style.visibility !== 'hidden' &&
+                                  parseFloat(style.opacity || "1") > 0 &&
+                                  rect.width > 0 &&
+                                  rect.height > 0;
+                  const hasOffsetParent = node.offsetParent !== null || node === document.body;
+                  if (!visible || !hasOffsetParent) {
+                    continue;
+                  }
+                  if (typeof node.click === 'function') { node.click(); return {clicked: true, xpath: xp, method: 'js-eval'}; }
+                  const ev = new MouseEvent('click', {bubbles: true, cancelable: true, view: window});
+                  node.dispatchEvent(ev);
+                  return {clicked: true, xpath: xp, method: 'js-event'};
+                }
+              } catch (e) {
+                // continue
+              }
             }
-          } catch (e) {
-            // continue
-          }
-        }
-        return {clicked: false};
-        """
+            return {clicked: false};
+            """
         try:
             result = webdriver.execute_script(js_code, xpaths)
             if result and result.get("clicked"):
                 # page-internal click dispatched; ensure post-click wait
                 time.sleep(5)
-            return result
+                return {
+                    "clicked": True,
+                    "xpath": result.get("xpath"),
+                    "method": result.get("method")
+                }
+            # normalize failure return to include same keys as successful case
+            return {"clicked": False, "xpath": None, "method": None}
         except Exception:
-            return {"clicked": False}
-
-    def inject_css(self, webdriver, css):
-        webdriver.execute_script("""
-            var style = document.createElement('style');
-            style.innerHTML = arguments[0];
-            document.head.appendChild(style);
-        """, css)
+            return {"clicked": False, "xpath": None, "method": None}
 
     def try_click_fast(self, webdriver, xpath):
         try:
             elements = webdriver.find_elements(By.XPATH, xpath)
             if elements:
-                print(f"[CookieConsent] Found {len(elements)} elements for xpath")
+                print(f"[CookieConsent] Found {len(elements)} elements for xpath: {xpath}")
             for el in elements:
                 if el.is_displayed():
                     # prefer JS for fast attempts (use click_and_wait with prefer_js=True)

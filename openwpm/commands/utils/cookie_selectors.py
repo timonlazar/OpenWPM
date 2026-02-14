@@ -57,8 +57,8 @@ KEYWORDS = [
 
 def xpath_string_literal(s):
     """
-    Erzeugt einen gültigen XPath-String,
-    auch wenn Apostrophe enthalten sind.
+    Generates a valid XPath string literal,
+    handling apostrophes correctly.
     """
     if "'" not in s:
         return f"'{s}'"
@@ -75,7 +75,7 @@ def generate_xpaths():
             " | //a[contains(translate(normalize-space(.), '{UPPER}', '{LOWER}'), {safe_word})]"
             " | //input[@type='button' or @type='submit'][contains(translate(@value, '{UPPER}', '{LOWER}'), {safe_word})]"
         ).format(UPPER=UPPER, LOWER=LOWER, safe_word=safe_word)
-        # normalize whitespace (sicherstellen, dass keine unerwarteten Zeilenumbrüche/Tabulatoren bleiben)
+        # normalize whitespace (ensure no unexpected line breaks/tabs remain)
         xpath = re.sub(r'\s+', ' ', xpath).strip()
         xpaths.append(xpath)
     return xpaths
