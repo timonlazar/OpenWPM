@@ -2,12 +2,27 @@ import json
 from urllib.parse import urlparse
 from typing import Dict, Any, List
 
-from whotracksme.data.loader import DataSource
-
+try:
+    from whotracksme.data.loader import DataSource
+except ImportError as exc:
+    raise ImportError(
+        "WhoTracks.me data loader not found. Please install the 'whotracksme' package."
+    ) from exc
 
 # -----------------------------
 # Helper
 # -----------------------------
+
+def domain_match(domain: str, tracker_domain: str) -> bool | dict[str, None | list[Any] | bool | str | Any]:
+    """
+    Subdomain-Matching
+    """
+    domain = normalize_domain(domain)
+    tracker_domain = normalize_domain(tracker_domain)
+    return (
+            domain == tracker_domain
+            or domain.endswith("." + tracker_domain)
+    )
 
 def extract_domain(url: str) -> str:
     try:
@@ -19,16 +34,28 @@ def extract_domain(url: str) -> str:
 def normalize_domain(domain: str) -> str:
     return domain.lstrip(".").lower()
 
-
-def domain_match(domain: str, tracker_domain: str) -> bool:
+def get_registrable_domain(domain: str) -> str:
     """
-    Subdomain-Matching
+    Return the registrable domain (eTLD\+1) for a given hostname.
+    Uses `tldextract` if available; falls back to a simple last-two-label heuristic.
     """
-    return (
-            domain == tracker_domain
-            or domain.endswith("." + tracker_domain)
-    )
+    domain = normalize_domain(domain)
+    if not domain:
+        return ""
 
+    try:
+        import tldextract  # optional dependency
+        ext = tldextract.extract(domain)
+        if ext.domain and ext.suffix:
+            return f"{ext.domain}.{ext.suffix}"
+        if ext.domain:
+            return ext.domain
+        return domain
+    except Exception:
+        parts = domain.split(".")
+        if len(parts) >= 2:
+            return ".".join(parts[-2:])
+        return domain
 
 # -----------------------------
 # Load WhoTracks.me DB

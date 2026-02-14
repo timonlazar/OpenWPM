@@ -2,7 +2,7 @@ import json
 import os
 import re
 import requests
-from typing import List, Dict
+from typing import List, Dict, Any
 
 # -------------------------------------------------
 # Konfiguration
@@ -30,7 +30,7 @@ COOKIE_PATTERNS = {
 # -------------------------------------------------
 # EasyPrivacy Download (einmalig)
 # -------------------------------------------------
-def download_easyprivacy():
+def download_easyprivacy() -> None:
     if os.path.exists(EASYPRIVACY_FILE):
         print("[i] EasyPrivacy bereits lokal vorhanden")
         return
@@ -114,7 +114,7 @@ def calculate_score(name_category: str, domain_match: bool) -> int:
 def analyze_cookies(
         cookies: List[Dict[str, str]],
         tracking_domains: List[str]
-) -> List[Dict[str, str]]:
+) -> List[Dict[str, Any]]:
 
     results = []
 
@@ -157,7 +157,7 @@ def analyze_cookies(
 # -------------------------------------------------
 # Main
 # -------------------------------------------------
-def main():
+def main() -> None:
     download_easyprivacy()
 
     tracking_domains = load_easyprivacy_domains()
