@@ -1,0 +1,6 @@
+[
+  { "name": "_ga", "domain": ".example.com" },
+  { "name": "_fbp", "domain": ".facebook.com" },
+  { "name": "sessionid", "domain": "example.com" },
+  { "name": "_gcl_au", "domain": ".shop.example" }
+]

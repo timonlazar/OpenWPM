@@ -1,0 +1,7 @@
+{
+  "script_url": "https://www.google-analytics.com/analytics.js",
+  "top_level_url": "https://example.com",
+  "object": "HTMLCanvasElement",
+  "property": "toDataURL",
+  "timestamp": 123456789
+}
