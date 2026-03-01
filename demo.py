@@ -1,15 +1,18 @@
 import argparse
+import logging
 from pathlib import Path
 from typing import Literal
 from datetime import datetime
 import tranco
+import os
+from dotenv import load_dotenv
 
 from custom_command import LinkCountingCommand
 from openwpm.commands.cookie_consent import AcceptCookieConsentCommand
 from openwpm.command_sequence import CommandSequence
 from openwpm.commands.browser_commands import GetCommand
 from openwpm.config import BrowserParams, ManagerParams
-from openwpm.storage.sql_provider import SQLiteStorageProvider
+from openwpm.storage.postgres_storage_provider import PostgresStorageProvider
 from openwpm.task_manager import TaskManager
 
 parser = argparse.ArgumentParser()
@@ -17,6 +20,31 @@ parser.add_argument("--tranco", action="store_true", default=False)
 parser.add_argument("--headless", action="store_true", default=False),
 
 args = parser.parse_args()
+load_dotenv(dotenv_path=Path(__file__).with_name(".env"))
+# Resolve schema file from env or fallback to file next to this script
+env_schema = os.environ.get("POSTGRES_SCHEMA_FILE")
+if env_schema:
+    schema_file = Path(env_schema).expanduser().resolve()
+else:
+    schema_file = Path(__file__).with_name("postgre_schema.sql").resolve()
+
+if not schema_file.exists():
+    logging.getLogger("openwpm").warning("Postgres schema file %s does not exist.", schema_file)
+
+# Build DSN from OPENWPM_PG_DSN or PG_* env vars
+pg_dsn = os.environ.get("OPENWPM_PG_DSN")
+if not pg_dsn and os.environ.get("PG_HOST"):
+    pg_user = os.environ.get("PG_USER", "postgres")
+    pg_pass = os.environ.get("PG_PASS", "")
+    pg_host = os.environ.get("PG_HOST", "localhost")
+    pg_port = os.environ.get("PG_PORT", "5432")
+    pg_db = os.environ.get("PG_DB", "openwpm")
+    if pg_pass:
+        pg_dsn = f"postgresql://{pg_user}:{pg_pass}@{pg_host}:{pg_port}/{pg_db}"
+    else:
+        pg_dsn = f"postgresql://{pg_user}@{pg_host}:{pg_port}/{pg_db}"
+
+storage_provider = PostgresStorageProvider(dsn=pg_dsn, schema_file=schema_file)
 
 sites = [
     "http://www.example.com",
@@ -75,7 +103,7 @@ manager_params.log_path = Path("./datadir/openwpm.log")
 with TaskManager(
         manager_params,
         browser_params,
-        SQLiteStorageProvider(Path(sqlite_path)),
+        storage_provider,
         None,
 ) as manager:
     # Visits the sites
