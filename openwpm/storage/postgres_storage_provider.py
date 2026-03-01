@@ -8,8 +8,10 @@ from psycopg2 import Error
 from psycopg2 import sql
 from psycopg2 import Binary
 
+from openwpm.storage.storage_providers import StructuredStorageProvider
 
-class PostgresStorageProvider:
+
+class PostgresStorageProvider(StructuredStorageProvider):
     """
     Structured storage provider backed by Postgres.
 
@@ -55,10 +57,15 @@ class PostgresStorageProvider:
         if self.schema_file and self.schema_file.exists():
             try:
                 schema_sql = self.schema_file.read_text(encoding="utf-8")
-                # Execute whole schema in one execute call
-                self.cur.execute(schema_sql)
+                # Split the schema into individual statements and execute sequentially.
+                # This avoids passing a multi-statement string to psycopg2.execute().
+                for stmt_text in (s.strip() for s in schema_sql.split(";")):
+                    if not stmt_text:
+                        continue
+                    # Execute each non-empty statement individually.
+                    self.cur.execute(stmt_text)
                 self.conn.commit()
-            except Exception as e:
+            except Exception:
                 self.logger.exception("Failed to initialize schema from %s", self.schema_file)
                 try:
                     self.conn.rollback()

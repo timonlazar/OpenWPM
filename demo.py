@@ -31,18 +31,30 @@ else:
 if not schema_file.exists():
     logging.getLogger("openwpm").warning("Postgres schema file %s does not exist.", schema_file)
 
-# Build DSN from OPENWPM_PG_DSN or PG_* env vars
+# Build DSN from OPENWPM_PG_DSN or PG_*/POSTGRES_* env vars
 pg_dsn = os.environ.get("OPENWPM_PG_DSN")
-if not pg_dsn and os.environ.get("PG_HOST"):
-    pg_user = os.environ.get("PG_USER", "postgres")
-    pg_pass = os.environ.get("PG_PASS", "")
-    pg_host = os.environ.get("PG_HOST", "localhost")
-    pg_port = os.environ.get("PG_PORT", "5432")
-    pg_db = os.environ.get("PG_DB", "openwpm")
+if not pg_dsn and (
+    os.environ.get("PG_HOST")
+    or os.environ.get("POSTGRES_HOST")
+    or os.environ.get("PG_USER")
+    or os.environ.get("POSTGRES_USER")
+    or os.environ.get("PG_DB")
+    or os.environ.get("POSTGRES_DB")
+):
+    pg_user = os.environ.get("PG_USER") or os.environ.get("POSTGRES_USER") or "postgres"
+    pg_pass = os.environ.get("PG_PASS") or os.environ.get("POSTGRES_PASSWORD") or ""
+    pg_host = os.environ.get("PG_HOST") or os.environ.get("POSTGRES_HOST") or "localhost"
+    pg_port = os.environ.get("PG_PORT") or os.environ.get("POSTGRES_PORT") or "5432"
+    pg_db = os.environ.get("PG_DB") or os.environ.get("POSTGRES_DB") or "openwpm"
     if pg_pass:
         pg_dsn = f"postgresql://{pg_user}:{pg_pass}@{pg_host}:{pg_port}/{pg_db}"
     else:
         pg_dsn = f"postgresql://{pg_user}@{pg_host}:{pg_port}/{pg_db}"
+
+if not pg_dsn:
+    raise SystemExit(
+        "Postgres DSN is not configured. Set OPENWPM_PG_DSN or PG_HOST (and related PG_* variables)."
+    )
 
 storage_provider = PostgresStorageProvider(dsn=pg_dsn, schema_file=schema_file)
 

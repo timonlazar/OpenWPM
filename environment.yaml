@@ -44,7 +44,7 @@ dependencies:
 - tblib=3.0.0
 - wget=1.21.4
 - pip:
-    - python-dotenv
+    - python-dotenv==1.0.1
     - dataclasses-json==0.6.7
     - domain-utils==0.7.1
     - jsonschema==4.23.0
