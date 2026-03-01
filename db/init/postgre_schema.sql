@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS crawl_history (
     );
 
 CREATE TABLE IF NOT EXISTS http_requests (
-                                             id SERIAL PRIMARY KEY,
+                                             id BIGSERIAL PRIMARY KEY,
                                              incognito BOOLEAN,
                                              browser_id BIGINT NOT NULL,
                                              visit_id BIGINT NOT NULL,

@@ -21,12 +21,12 @@ parser.add_argument("--headless", action="store_true", default=False),
 
 args = parser.parse_args()
 load_dotenv(dotenv_path=Path(__file__).with_name(".env"))
-# Resolve schema file from env or fallback to file next to this script
+# Resolve schema file from env or fallback to committed db/init schema location
 env_schema = os.environ.get("POSTGRES_SCHEMA_FILE")
 if env_schema:
     schema_file = Path(env_schema).expanduser().resolve()
 else:
-    schema_file = Path(__file__).with_name("postgre_schema.sql").resolve()
+    schema_file = (Path(__file__).parent / "db" / "init" / "postgre_schema.sql").resolve()
 
 if not schema_file.exists():
     logging.getLogger("openwpm").warning("Postgres schema file %s does not exist.", schema_file)
@@ -56,7 +56,7 @@ if args.tranco:
     print("Loading tranco top sites list...")
     t = tranco.Tranco(cache=True, cache_dir=".tranco")
     latest_list = t.list(date="2025-08-05")
-    sites = ["http://" + x for x in latest_list.top(10)]
+    sites = ["http://" + x for x in latest_list.top(200)]
 
 date_str = datetime.now().strftime("%Y-%m-%d")
 sqlite_path = Path(f"./datadir/crawl-data-{date_str}.sqlite")

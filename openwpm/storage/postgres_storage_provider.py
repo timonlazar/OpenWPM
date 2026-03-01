@@ -58,12 +58,15 @@ class PostgresStorageProvider:
                 # Execute whole schema in one execute call
                 self.cur.execute(schema_sql)
                 self.conn.commit()
-            except Exception:
+            except Exception as e:
                 self.logger.exception("Failed to initialize schema from %s", self.schema_file)
                 try:
                     self.conn.rollback()
                 except Exception:
                     self.logger.exception("Rollback failed after schema init failure.")
+                # Fail fast if schema initialization fails so controller does not run
+                # with an unusable or partially applied schema.
+                raise
         elif self.schema_file:
             self.logger.warning("Schema file %s does not exist.", self.schema_file)
 
@@ -187,11 +190,25 @@ class PostgresStorageProvider:
     async def finalize_visit_id(self, visit_id: int, interrupted: bool = False) -> Optional[None]:
         """
         Flush/write any batched records for this visit_id.
+        Optionally records the visit as interrupted before finalizing.
         Returns an awaitable if finalization is asynchronous; currently commits immediately.
         """
         if self.conn is None:
             return None
         try:
+            # If the visit was interrupted, record it in the incomplete_visits table
+            if interrupted and self.cur is not None:
+                stmt = sql.SQL("INSERT INTO {} ({}) VALUES ({})").format(
+                    sql.Identifier("incomplete_visits"),
+                    sql.Identifier("visit_id"),
+                    sql.Placeholder(),
+                )
+                success = self._execute_safe(stmt, (visit_id,))
+                if not success:
+                    self.logger.error(
+                        "Failed to record interrupted visit_id %s in incomplete_visits.",
+                        visit_id,
+                    )
             try:
                 self.conn.commit()
             except Exception:
