@@ -1,15 +1,18 @@
 import argparse
+import logging
 from pathlib import Path
 from typing import Literal
 from datetime import datetime
 import tranco
+import os
+from dotenv import load_dotenv
 
 from custom_command import LinkCountingCommand
 from openwpm.commands.cookie_consent import AcceptCookieConsentCommand
 from openwpm.command_sequence import CommandSequence
 from openwpm.commands.browser_commands import GetCommand
 from openwpm.config import BrowserParams, ManagerParams
-from openwpm.storage.sql_provider import SQLiteStorageProvider
+from openwpm.storage.postgres_storage_provider import PostgresStorageProvider
 from openwpm.task_manager import TaskManager
 
 parser = argparse.ArgumentParser()
@@ -17,6 +20,43 @@ parser.add_argument("--tranco", action="store_true", default=False)
 parser.add_argument("--headless", action="store_true", default=False),
 
 args = parser.parse_args()
+load_dotenv(dotenv_path=Path(__file__).with_name(".env"))
+# Resolve schema file from env or fallback to committed db/init schema location
+env_schema = os.environ.get("POSTGRES_SCHEMA_FILE")
+if env_schema:
+    schema_file = Path(env_schema).expanduser().resolve()
+else:
+    schema_file = (Path(__file__).parent / "db" / "init" / "postgre_schema.sql").resolve()
+
+if not schema_file.exists():
+    logging.getLogger("openwpm").warning("Postgres schema file %s does not exist.", schema_file)
+
+# Build DSN from OPENWPM_PG_DSN or PG_*/POSTGRES_* env vars
+pg_dsn = os.environ.get("OPENWPM_PG_DSN")
+if not pg_dsn and (
+    os.environ.get("PG_HOST")
+    or os.environ.get("POSTGRES_HOST")
+    or os.environ.get("PG_USER")
+    or os.environ.get("POSTGRES_USER")
+    or os.environ.get("PG_DB")
+    or os.environ.get("POSTGRES_DB")
+):
+    pg_user = os.environ.get("PG_USER") or os.environ.get("POSTGRES_USER") or "postgres"
+    pg_pass = os.environ.get("PG_PASS") or os.environ.get("POSTGRES_PASSWORD") or ""
+    pg_host = os.environ.get("PG_HOST") or os.environ.get("POSTGRES_HOST") or "localhost"
+    pg_port = os.environ.get("PG_PORT") or os.environ.get("POSTGRES_PORT") or "5432"
+    pg_db = os.environ.get("PG_DB") or os.environ.get("POSTGRES_DB") or "openwpm"
+    if pg_pass:
+        pg_dsn = f"postgresql://{pg_user}:{pg_pass}@{pg_host}:{pg_port}/{pg_db}"
+    else:
+        pg_dsn = f"postgresql://{pg_user}@{pg_host}:{pg_port}/{pg_db}"
+
+if not pg_dsn:
+    raise SystemExit(
+        "Postgres DSN is not configured. Set OPENWPM_PG_DSN or PG_HOST (and related PG_* variables)."
+    )
+
+storage_provider = PostgresStorageProvider(dsn=pg_dsn, schema_file=schema_file)
 
 sites = [
     "http://www.example.com",
@@ -28,7 +68,7 @@ if args.tranco:
     print("Loading tranco top sites list...")
     t = tranco.Tranco(cache=True, cache_dir=".tranco")
     latest_list = t.list(date="2025-08-05")
-    sites = ["http://" + x for x in latest_list.top(10)]
+    sites = ["http://" + x for x in latest_list.top(200)]
 
 date_str = datetime.now().strftime("%Y-%m-%d")
 sqlite_path = Path(f"./datadir/crawl-data-{date_str}.sqlite")
@@ -75,7 +115,7 @@ manager_params.log_path = Path("./datadir/openwpm.log")
 with TaskManager(
         manager_params,
         browser_params,
-        SQLiteStorageProvider(Path(sqlite_path)),
+        storage_provider,
         None,
 ) as manager:
     # Visits the sites
