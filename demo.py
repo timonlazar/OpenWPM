@@ -17,9 +17,23 @@ from openwpm.task_manager import TaskManager
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--tranco", action="store_true", default=False)
-parser.add_argument("--headless", action="store_true", default=False),
+parser.add_argument("--headless", action="store_true", default=False)
+parser.add_argument("--firefox", action="store_true", default=False,
+                    help="Use Firefox browser instances")
+parser.add_argument("--chrome", action="store_true", default=False,
+                    help="Use Chrome browser instances")
 
 args = parser.parse_args()
+
+# Determine which browsers to use. Default to Firefox if neither flag is given.
+selected_browsers = []
+if args.firefox:
+    selected_browsers.append("firefox")
+if args.chrome:
+    selected_browsers.append("chrome")
+if not selected_browsers:
+    selected_browsers = ["firefox"]
+
 load_dotenv(dotenv_path=Path(__file__).with_name(".env"))
 # Resolve schema file from env or fallback to committed db/init schema location
 env_schema = os.environ.get("POSTGRES_SCHEMA_FILE")
@@ -79,24 +93,34 @@ if args.headless:
 
 # Loads the default ManagerParams
 # and NUM_BROWSERS copies of the default BrowserParams
-NUM_BROWSERS = 2
+# One browser instance is created per selected browser type.
+NUM_BROWSERS = len(selected_browsers)
 manager_params = ManagerParams(num_browsers=NUM_BROWSERS)
-browser_params = [BrowserParams(display_mode=display_mode) for _ in range(NUM_BROWSERS)]
+browser_params = [BrowserParams(display_mode=display_mode, browser=b) for b in selected_browsers]
 
 # Update browser configuration (use this for per-browser settings)
 for browser_param in browser_params:
-    # Record HTTP Requests and Responses
-    browser_param.http_instrument = True
-    # Record cookie changes
-    browser_param.cookie_instrument = True
-    # Record Navigations
-    browser_param.navigation_instrument = True
-    # Record JS Web API calls
-    browser_param.js_instrument = True
-    # Record the callstack of all WebRequests made
-    # browser_param.callstack_instrument = True
-    # Record DNS resolution
-    browser_param.dns_instrument = True
+    if browser_param.browser == "chrome":
+        # Chrome does not support the OpenWPM extension;
+        # extension-based instrumentation is therefore not available.
+        browser_param.http_instrument = False
+        browser_param.cookie_instrument = False
+        browser_param.navigation_instrument = False
+        browser_param.js_instrument = False
+        browser_param.dns_instrument = False
+    else:
+        # Record HTTP Requests and Responses
+        browser_param.http_instrument = True
+        # Record cookie changes
+        browser_param.cookie_instrument = True
+        # Record Navigations
+        browser_param.navigation_instrument = True
+        # Record JS Web API calls
+        browser_param.js_instrument = True
+        # Record the callstack of all WebRequests made
+        # browser_param.callstack_instrument = True
+        # Record DNS resolution
+        browser_param.dns_instrument = True
     # Set this value as appropriate for the size of your temp directory
     # if you are running out of space
     browser_param.maximum_profile_size = 50 * (10**20)  # 50 MB = 50 * 2^20 Bytes

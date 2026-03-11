@@ -485,8 +485,9 @@ class FinalizeCommand(BaseCommand):
         # This doesn't immediately stop data saving from the current
         # visit so we sleep briefly before unsetting the visit_id.
         time.sleep(self.sleep)
-        msg = {"action": "Finalize", "visit_id": self.visit_id}
-        extension_socket.send(msg)
+        if extension_socket is not None:
+            msg = {"action": "Finalize", "visit_id": self.visit_id}
+            extension_socket.send(msg)
 
 
 class InitializeCommand(BaseCommand):
@@ -506,5 +507,6 @@ class InitializeCommand(BaseCommand):
         manager_params,
         extension_socket,
     ):
-        msg = {"action": "Initialize", "visit_id": self.visit_id}
-        extension_socket.send(msg)
+        if extension_socket is not None:
+            msg = {"action": "Initialize", "visit_id": self.visit_id}
+            extension_socket.send(msg)

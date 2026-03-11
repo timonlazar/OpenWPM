@@ -26,6 +26,7 @@ from .commands.types import BaseCommand, ShutdownSignal
 from .commands.utils.webdriver_utils import parse_neterror
 from .config import BrowserParamsInternal, ManagerParamsInternal
 from .deploy_browsers import deploy_firefox
+from .deploy_browsers import deploy_chrome
 from .errors import BrowserConfigError, BrowserCrashError, ProfileLoadError
 from .socket_interface import ClientSocket
 from .storage.storage_providers import TableName
@@ -732,14 +733,24 @@ class BrowserManager(Process):
 
         try:
             # Start Xvfb (if necessary), webdriver, and browser
-            driver, browser_profile_path, display = deploy_firefox.deploy_firefox(
-                self.status_queue,
-                self.browser_params,
-                self.manager_params,
-                self.crash_recovery,
-            )
-
-            extension_socket = self._start_extension(browser_profile_path)
+            browser_type = self.browser_params.browser.lower()
+            if browser_type == "chrome":
+                driver, browser_profile_path, display = deploy_chrome.deploy_chrome(
+                    self.status_queue,
+                    self.browser_params,
+                    self.manager_params,
+                    self.crash_recovery,
+                )
+                # Chrome has no OpenWPM extension – use a no-op socket placeholder
+                extension_socket = None
+            else:
+                driver, browser_profile_path, display = deploy_firefox.deploy_firefox(
+                    self.status_queue,
+                    self.browser_params,
+                    self.manager_params,
+                    self.crash_recovery,
+                )
+                extension_socket = self._start_extension(browser_profile_path)
 
             self.logger.debug(
                 "BROWSER %i: BrowserManager ready." % self.browser_params.browser_id
@@ -749,7 +760,7 @@ class BrowserManager(Process):
             self.status_queue.put(("STATUS", "Browser Ready", "READY"))
             self.browser_params.profile_path = browser_profile_path
 
-            assert extension_socket is not None
+            # extension_socket may be None for browsers without an OpenWPM extension (e.g. Chrome)
             # starts accepting arguments until told to die
             while True:
                 # no command for now -> sleep to avoid pegging CPU on blocking get

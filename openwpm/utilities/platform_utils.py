@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 from collections import OrderedDict
 from copy import deepcopy
@@ -64,6 +65,46 @@ def get_firefox_binary_path():
             "location using the OS environment variable FIREFOX_BINARY."
         )
     return firefox_binary_path
+
+
+def get_chrome_binary_path():
+    """
+    Return the path to the Chrome/Chromium binary.
+    Checks CHROME_BINARY env var first, then falls back to common system paths.
+    """
+    if "CHROME_BINARY" in os.environ:
+        chrome_binary_path = os.environ["CHROME_BINARY"]
+        if not os.path.isfile(chrome_binary_path):
+            raise RuntimeError(
+                "No file found at the path specified in "
+                "environment variable `CHROME_BINARY`. "
+                "Current `CHROME_BINARY`: %s" % chrome_binary_path
+            )
+        return chrome_binary_path
+
+    # Try to find chrome/chromium on the PATH (cross-platform)
+    for candidate in ["google-chrome", "google-chrome-stable", "chromium-browser", "chromium", "chrome"]:
+        path = shutil.which(candidate)
+        if path:
+            return path
+
+    # Common install paths
+    if platform == "darwin":
+        mac_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        if os.path.isfile(mac_path):
+            return mac_path
+    elif platform.startswith("win"):
+        for win_path in [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        ]:
+            if os.path.isfile(win_path):
+                return win_path
+
+    raise RuntimeError(
+        "Chrome binary not found. Please install Google Chrome or Chromium, "
+        "or specify the binary location using the OS environment variable CHROME_BINARY."
+    )
 
 
 def get_version():
