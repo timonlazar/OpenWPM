@@ -84,6 +84,8 @@ class ChromeInstrumentation:
 
         self._visit_id: Optional[VisitId] = None
         self._lock = threading.Lock()
+        # temporary map url -> last observed JS call stack
+        self._last_js_callstacks: Dict[str, str] = {}
 
         # Open a dedicated socket to the storage controller
         self._sock = ClientSocket(serialization="json")
@@ -94,6 +96,14 @@ class ChromeInstrumentation:
         self._sock.send("ChromeInstrumentation-%d" % self.browser_id)
 
         self._setup_cdp()
+        # Install a lightweight in-page JS instrumentation helper. We don't
+        # rely on the extension for Chrome, so inject a script that wraps
+        # fetch/XHR/WebSocket and other Web APIs to capture events and
+        # stacktraces into window.__openwpm_js_events for later retrieval.
+        try:
+            self._install_js_instrumentation()
+        except Exception:
+            logger.debug("BROWSER %i: Could not install in-page JS instrumentation", self.browser_id)
 
     # ------------------------------------------------------------------
     # Public API
@@ -111,6 +121,18 @@ class ChromeInstrumentation:
         visit_id = self._visit_id
         if visit_id is None:
             return
+
+        # Re-inject instrumentation into the freshly loaded page (best-effort)
+        try:
+            if self.browser_params.js_instrument:
+                self._install_js_instrumentation()
+        except Exception:
+            pass
+
+        # Collect JS-level instrumentation events first so we can attach
+        # callstacks to subsequent network records
+        if self.browser_params.js_instrument:
+            self._collect_js_events(visit_id)
 
         if self.browser_params.http_instrument:
             self._collect_network(visit_id)
@@ -160,13 +182,315 @@ class ChromeInstrumentation:
     # Collection helpers
     # ------------------------------------------------------------------
 
+    def _collect_navigation(self, visit_id: VisitId) -> None:
+        """Record the current navigation via CDP Page.getNavigationHistory."""
+        try:
+            nav = self.driver.execute_cdp_cmd("Page.getNavigationHistory", {})
+            current_index = nav.get("currentIndex", 0)
+            entries = nav.get("entries", [])
+            if not entries:
+                return
+            entry = entries[current_index] if current_index < len(entries) else entries[-1]
+        except Exception as e:
+            logger.debug(
+                "BROWSER %i: Page.getNavigationHistory failed: %s", self.browser_id, e
+            )
+            return
+
+        now = _now_ts()
+        record: Dict[str, Any] = {
+            "visit_id": visit_id,
+            "browser_id": self.browser_id,
+            "frame_id": None,
+            "parent_frame_id": None,
+            "url": entry.get("url", ""),
+            "transition_type": entry.get("transitionType", None),
+            "transition_qualifiers": None,
+            "before_navigate_event_ordinal": None,
+            "before_navigate_time_stamp": now,
+            "committed_event_ordinal": None,
+            "committed_time_stamp": now,
+            "tab_id": None,
+            "window_id": None,
+        }
+        self._send("navigations", record)
+
+    def _collect_js_events(self, visit_id: VisitId) -> None:
+        """Retrieve events recorded by the injected JS instrumentation and send them."""
+        try:
+            events = self.driver.execute_script(
+                "var ev = window.__openwpm_js_events || []; window.__openwpm_js_events = []; return ev;"
+            ) or []
+        except Exception as e:
+            logger.debug("BROWSER %i: Failed to retrieve injected JS events: %s", self.browser_id, e)
+            return
+
+        # Clear previous mapping for this visit
+        self._last_js_callstacks = {}
+
+        doc_url = ""
+        try:
+            doc_url = self.driver.current_url
+        except Exception:
+            pass
+
+        for ev in events:
+            try:
+                ev_type = ev.get("type")
+                detail = ev.get("detail") or {}
+                stack = ev.get("stack")
+
+                # Try to extract a URL for correlation with resource entries
+                url = None
+                if isinstance(detail, dict):
+                    args = detail.get("arguments")
+                    if isinstance(args, list) and args:
+                        first = args[0]
+                        if isinstance(first, str):
+                            url = first
+                        elif isinstance(first, dict) and first.get("url"):
+                            url = first.get("url")
+                    if not url and detail.get("url"):
+                        url = detail.get("url")
+
+                # Store last observed stack for this URL
+                if url and stack:
+                    try:
+                        self._last_js_callstacks[url] = stack
+                    except Exception:
+                        pass
+
+                # Compose a record matching the `javascript` table schema
+                js_record: Dict[str, Any] = {
+                    "visit_id": visit_id,
+                    "browser_id": self.browser_id,
+                    "extension_session_uuid": None,
+                    "event_ordinal": None,
+                    "page_scoped_event_ordinal": None,
+                    "window_id": None,
+                    "tab_id": None,
+                    "frame_id": None,
+                    "script_url": detail.get("script_url") if isinstance(detail, dict) else None,
+                    "script_line": None,
+                    "script_col": None,
+                    "func_name": None,
+                    "script_loc_eval": None,
+                    "document_url": doc_url,
+                    "top_level_url": doc_url,
+                    "call_stack": stack,
+                    "symbol": None,
+                    "operation": ev_type,
+                    "value": json.dumps(detail, ensure_ascii=False) if not isinstance(detail, str) else detail,
+                    "arguments": json.dumps(detail.get("arguments")) if isinstance(detail, dict) and detail.get("arguments") else None,
+                    "time_stamp": _now_ts(),
+                }
+
+                self._send("javascript", js_record)
+
+                # If the event correlates to a network URL, emit a callstacks row
+                if url and stack:
+                    try:
+                        req_id = hash(f"{visit_id}-{url}") & 0x7FFFFFFF
+                        cs_rec = {
+                            "request_id": req_id,
+                            "browser_id": self.browser_id,
+                            "visit_id": visit_id,
+                            "call_stack": stack,
+                        }
+                        self._send("callstacks", cs_rec)
+                    except Exception:
+                        pass
+
+            except Exception:
+                logger.debug("BROWSER %i: Failed to process JS event: %s", self.browser_id, ev)
+
+    def _install_js_instrumentation(self) -> None:
+        """Injects a script into the page context to capture common Web API calls.
+
+        The injected script maintains window.__openwpm_js_events array and
+        pushes small JSON-serializable objects describing each event.
+        """
+        js = r"""
+        (function(){
+            try{
+                if(window.__openwpm_js_installed) return;
+                window.__openwpm_js_installed = true;
+                window.__openwpm_js_events = window.__openwpm_js_events || [];
+
+                function pushEvent(type, detail){
+                    var stack = (new Error()).stack || '';
+                    try{
+                        window.__openwpm_js_events.push({type: type, detail: detail, stack: stack});
+                    }catch(e){ /* silent */ }
+                }
+
+                // Wrap fetch
+                if(window.fetch){
+                    var _origFetch = window.fetch;
+                    window.fetch = function(){
+                        try{ pushEvent('fetch', {arguments: Array.prototype.slice.call(arguments)}); }catch(e){}
+                        return _origFetch.apply(this, arguments);
+                    };
+                }
+
+                // Wrap XMLHttpRequest
+                try{
+                    var _open = XMLHttpRequest.prototype.open;
+                    var _send = XMLHttpRequest.prototype.send;
+                    XMLHttpRequest.prototype.open = function(method, url){
+                        this.__openwpm_xhr_url = url;
+                        this.__openwpm_xhr_method = method;
+                        return _open.apply(this, arguments);
+                    };
+                    XMLHttpRequest.prototype.send = function(body){
+                        try{ pushEvent('xhr', {method: this.__openwpm_xhr_method, url: this.__openwpm_xhr_url}); }catch(e){}
+                        return _send.apply(this, arguments);
+                    };
+                }catch(e){}
+
+                // Wrap WebSocket
+                try{
+                    var _WS = window.WebSocket;
+                    if(_WS){
+                        window.WebSocket = function(url, protocols){
+                            try{ pushEvent('websocket', {url: url}); }catch(e){}
+                            return protocols ? new _WS(url, protocols) : new _WS(url);
+                        };
+                        window.WebSocket.prototype = _WS.prototype;
+                    }
+                }catch(e){}
+
+                // Monitor navigator.geolocation.getCurrentPosition/watchPosition
+                try{
+                    if(navigator.geolocation){
+                        var geo = navigator.geolocation;
+                        var _get = geo.getCurrentPosition;
+                        if(_get){
+                            geo.getCurrentPosition = function(success, error, opts){
+                                try{ pushEvent('geolocation.getCurrentPosition', {}); }catch(e){}
+                                return _get.apply(this, arguments);
+                            };
+                        }
+                        var _watch = geo.watchPosition;
+                        if(_watch){
+                            geo.watchPosition = function(success, error, opts){
+                                try{ pushEvent('geolocation.watchPosition', {}); }catch(e){}
+                                return _watch.apply(this, arguments);
+                            };
+                        }
+                    }
+                }catch(e){}
+
+                // Monitor postMessage
+                try{
+                    var _post = window.postMessage;
+                    window.postMessage = function(message, targetOrigin, transfer){
+                        try{ pushEvent('postMessage', {message: message, targetOrigin: targetOrigin}); }catch(e){}
+                        return _post.apply(this, arguments);
+                    };
+                }catch(e){}
+
+            }catch(e){/* swallow */}
+        })();
+        """
+        # Execute the injection as a raw script via Selenium so it's present in
+        # newly opened pages. We inject once into the top-level browsing context.
+        try:
+            self.driver.execute_script(js)
+        except Exception:
+            # Best effort only
+            pass
+
     def _collect_network(self, visit_id: VisitId) -> None:
         """
         Read the CDP network log via Performance.getEntries (JS) because
         the plain CDP Network domain only provides live events (no history).
         We use the PerformanceResourceTiming API which is always available.
+        Additionally, extract DNS timing info from resource timing entries
+        and send as 'dns' records to approximate Firefox DNS instrumentation.
         """
         try:
+            # If selenium-wire is available, prefer using driver.requests for
+            # richer event-based data (full headers, response code, bodies).
+            entries: List[Dict] = []
+            try:
+                # selenium-wire exposes .requests containing an ordered list of requests
+                if hasattr(self.driver, "requests"):
+                    sw_requests = getattr(self.driver, "requests") or []
+                    for r in sw_requests:
+                        try:
+                            url = getattr(r, "url", "")
+                            if not url:
+                                continue
+                            req_id = hash(f"{visit_id}-{url}") & 0x7FFFFFFF
+                            now = _now_ts()
+                            # Build request record
+                            req_record = {
+                                "visit_id": visit_id,
+                                "browser_id": self.browser_id,
+                                "url": url,
+                                "top_level_url": self.driver.current_url if hasattr(self.driver, "current_url") else "",
+                                "method": getattr(r, "method", "GET"),
+                                "referrer": getattr(r, "headers", {}).get("Referer", "") if getattr(r, "headers", None) else "",
+                                "headers": json.dumps(dict(getattr(r, "headers", {}))) if getattr(r, "headers", None) else "{}",
+                                "request_id": req_id,
+                                "resource_type": getattr(r, "resource_type", "other") if hasattr(r, "resource_type") else "other",
+                                "post_body": getattr(r, "body", None),
+                                "post_body_raw": None,
+                                "is_XHR": getattr(r, "is_xhr", False) if hasattr(r, "is_xhr") else False,
+                                "req_call_stack": None,
+                                "frame_id": None,
+                                "time_stamp": now,
+                            }
+                            # Attach any JS-collected callstack
+                            try:
+                                stack = None
+                                stack = self._last_js_callstacks.get(url)
+                                if not stack:
+                                    base = url.split('?')[0]
+                                    stack = self._last_js_callstacks.get(base)
+                                if stack:
+                                    req_record["req_call_stack"] = stack
+                            except Exception:
+                                pass
+
+                            self._send("http_requests", req_record)
+
+                            # Build response record if available
+                            try:
+                                resp = getattr(r, "response", None)
+                                status = getattr(resp, "status_code", 0) if resp is not None else 0
+                                resp_headers = dict(getattr(resp, "headers", {}) if resp is not None else {})
+                                resp_record = {
+                                    "visit_id": visit_id,
+                                    "browser_id": self.browser_id,
+                                    "url": url,
+                                    "method": getattr(r, "method", "GET"),
+                                    "response_status": status,
+                                    "response_status_text": "",
+                                    "is_cached": False,
+                                    "headers": json.dumps(resp_headers),
+                                    "request_id": req_id,
+                                    "location": resp_headers.get("Location") if resp_headers else None,
+                                    "time_stamp": now,
+                                    "content_hash": None,
+                                }
+                                self._send("http_responses", resp_record)
+                            except Exception:
+                                pass
+                        except Exception:
+                            continue
+                    # After processing selenium-wire queue, clear it for next visit
+                    try:
+                        if hasattr(self.driver, "requests") and hasattr(self.driver.requests, "clear"):
+                            self.driver.requests.clear()
+                    except Exception:
+                        pass
+                    return
+            except Exception:
+                # Fall back to performance entries if selenium-wire access fails
+                entries = []
+
             entries: List[Dict] = self.driver.execute_script(
                 """
                 var entries = performance.getEntriesByType('resource');
@@ -229,6 +553,20 @@ class ChromeInstrumentation:
                 "frame_id": None,
                 "time_stamp": now,
             }
+            # Attach any JS-collected callstack for this URL
+            try:
+                stack = None
+                # Direct match
+                stack = self._last_js_callstacks.get(url)
+                # Try normalized match by stripping query params if not found
+                if not stack:
+                    base = url.split('?')[0]
+                    stack = self._last_js_callstacks.get(base)
+                if stack:
+                    req_record["req_call_stack"] = stack
+            except Exception:
+                pass
+
             self._send("http_requests", req_record)
 
             # HTTP response record
@@ -274,6 +612,35 @@ class ChromeInstrumentation:
             }
             self._send("http_redirects", redirect_record)
 
+        # Extract DNS-like records from resource timing entries
+        try:
+            dns_entries = self.driver.execute_script(
+                "return (performance.getEntriesByType('resource') || []).map(function(e){ return {name: e.name, domainLookupStart: e.domainLookupStart, domainLookupEnd: e.domainLookupEnd}; });"
+            ) or []
+        except Exception:
+            dns_entries = []
+
+        for de in dns_entries:
+            try:
+                start = de.get("domainLookupStart") or 0
+                end = de.get("domainLookupEnd") or 0
+                if end > start:
+                    # Map to dns_responses schema
+                    dns_rec = {
+                        "request_id": req_id_counter,  # best-effort unique token for this batch
+                        "browser_id": self.browser_id,
+                        "visit_id": visit_id,
+                        "hostname": de.get("name", ""),
+                        "addresses": None,
+                        "used_address": None,
+                        "canonical_name": None,
+                        "is_TRR": None,
+                        "time_stamp": _now_ts(),
+                    }
+                    self._send("dns_responses", dns_rec)
+            except Exception:
+                pass
+
     def _collect_cookies(self, visit_id: VisitId) -> None:
         """Read all cookies for the current page via CDP."""
         try:
@@ -314,39 +681,6 @@ class ChromeInstrumentation:
                 "time_stamp": _now_ts(),
             }
             self._send("javascript_cookies", record)
-
-    def _collect_navigation(self, visit_id: VisitId) -> None:
-        """Record the current navigation via CDP Page.getNavigationHistory."""
-        try:
-            nav = self.driver.execute_cdp_cmd("Page.getNavigationHistory", {})
-            current_index = nav.get("currentIndex", 0)
-            entries = nav.get("entries", [])
-            if not entries:
-                return
-            entry = entries[current_index] if current_index < len(entries) else entries[-1]
-        except Exception as e:
-            logger.debug(
-                "BROWSER %i: Page.getNavigationHistory failed: %s", self.browser_id, e
-            )
-            return
-
-        now = _now_ts()
-        record: Dict[str, Any] = {
-            "visit_id": visit_id,
-            "browser_id": self.browser_id,
-            "frame_id": None,
-            "parent_frame_id": None,
-            "url": entry.get("url", ""),
-            "transition_type": entry.get("transitionType", None),
-            "transition_qualifiers": None,
-            "before_navigate_event_ordinal": None,
-            "before_navigate_time_stamp": now,
-            "committed_event_ordinal": None,
-            "committed_time_stamp": now,
-            "tab_id": None,
-            "window_id": None,
-        }
-        self._send("navigations", record)
 
     # ------------------------------------------------------------------
     # Send to StorageController

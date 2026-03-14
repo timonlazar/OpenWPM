@@ -1,0 +1,4 @@
+selenium>=4.6
+selenium-wire>=5.0
+psycopg2-binary
+python-dotenv

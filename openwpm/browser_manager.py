@@ -500,6 +500,38 @@ class BrowserManagerHandle:
         # internal buffers to drain. Stopgap in support of #135
         time.sleep(2)
 
+        # If this browser type does not use the extension (e.g. Chrome), the
+        # extension won't send a Finalize message to the StorageController.
+        # In that case, explicitly finalize the visit here as successful
+        # (unless a restart was already required, in which case it was
+        # finalized as unsuccessful earlier).
+        try:
+            browser_type = (
+                self.browser_params.browser.lower()
+                if self.browser_params and self.browser_params.browser
+                else ""
+            )
+        except Exception:
+            browser_type = ""
+
+        if browser_type == "chrome":
+            # If a restart was requested due to an error, the visit has already
+            # been finalized with success=False above. Only finalize here when
+            # we did not require a restart.
+            if not self.restart_required:
+                try:
+                    task_manager.sock.finalize_visit_id(
+                        visit_id=self.curr_visit_id, success=True
+                    )
+                except Exception:
+                    # If finalization fails here we log and continue; the
+                    # StorageController will eventually finalize on shutdown.
+                    self.logger.exception(
+                        "BROWSER %i: Failed to finalize visit_id %s for chrome",
+                        self.browser_id,
+                        self.curr_visit_id,
+                    )
+
         if task_manager.closing:
             return
 

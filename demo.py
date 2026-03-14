@@ -107,8 +107,8 @@ for browser_param in browser_params:
         browser_param.http_instrument = True
         browser_param.cookie_instrument = True
         browser_param.navigation_instrument = True
-        browser_param.js_instrument = False
-        browser_param.dns_instrument = False
+        browser_param.js_instrument = True
+        browser_param.dns_instrument = True
     else:
         # Record HTTP Requests and Responses
         browser_param.http_instrument = True
