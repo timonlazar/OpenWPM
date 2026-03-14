@@ -12,6 +12,7 @@ from selenium.webdriver.chrome.service import Service
 
 from ..config import BrowserParamsInternal, ManagerParamsInternal
 from ..utilities.platform_utils import get_chrome_binary_path
+from .chrome_instrumentation import ChromeInstrumentation
 
 DEFAULT_SCREEN_RES = (1366, 768)
 logger = logging.getLogger("openwpm")
@@ -22,12 +23,11 @@ def deploy_chrome(
     browser_params: BrowserParamsInternal,
     manager_params: ManagerParamsInternal,
     crash_recovery: bool,
-) -> Tuple[webdriver.Chrome, Path, Optional[Display]]:
+) -> Tuple[webdriver.Chrome, Path, Optional[Display], Optional[ChromeInstrumentation]]:
     """
     Launches a Chrome instance with parameters set by the input browser_params.
-    Note: Chrome does not support the OpenWPM Firefox extension, so JS/HTTP/
-    cookie instrumentation via the extension is not available. Chrome is provided
-    as a basic browsing option.
+    Instrumentation (HTTP, cookies, navigation) is collected via the Chrome
+    DevTools Protocol (CDP) instead of the Firefox WebExtension.
     """
     assert browser_params.browser_id is not None
 
@@ -48,7 +48,6 @@ def deploy_chrome(
 
     if display_mode == "xvfb":
         try:
-            from easyprocess import EasyProcessError
             display = Display(visible=False, size=DEFAULT_SCREEN_RES)
             display.start()
             display_pid, display_port = display.pid, display.display
@@ -86,6 +85,8 @@ def deploy_chrome(
     co.add_argument("--safebrowsing-disable-auto-update")
     co.add_argument("--password-store=basic")
     co.add_argument("--use-mock-keychain")
+    # Required for CDP event listeners to work correctly
+    co.add_argument("--remote-allow-origins=*")
 
     # Third-party cookies
     if browser_params.tp_cookies.lower() == "never":
@@ -118,8 +119,8 @@ def deploy_chrome(
     driver.set_window_size(*DEFAULT_SCREEN_RES)
 
     logger.debug(
-        "BROWSER %i: Chrome launched (no OpenWPM extension – instrumentation via "
-        "extension is not available for Chrome)." % browser_params.browser_id
+        "BROWSER %i: Chrome launched, enabling CDP instrumentation."
+        % browser_params.browser_id
     )
 
     # Get browser process pid
@@ -130,4 +131,24 @@ def deploy_chrome(
 
     status_queue.put(("STATUS", "Browser Launched", int(pid)))
 
-    return driver, browser_profile_path, display
+    # Set up CDP-based instrumentation (replaces the Firefox WebExtension)
+    instrumentation: Optional[ChromeInstrumentation] = None
+    any_instrument = (
+        browser_params.http_instrument
+        or browser_params.cookie_instrument
+        or browser_params.navigation_instrument
+    )
+    if any_instrument:
+        try:
+            instrumentation = ChromeInstrumentation(driver, browser_params, manager_params)
+            logger.debug(
+                "BROWSER %i: CDP instrumentation initialized." % browser_params.browser_id
+            )
+        except Exception as e:
+            logger.warning(
+                "BROWSER %i: Could not initialize CDP instrumentation: %s",
+                browser_params.browser_id,
+                e,
+            )
+
+    return driver, browser_profile_path, display, instrumentation

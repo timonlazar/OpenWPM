@@ -730,18 +730,21 @@ class BrowserManager(Process):
     def run(self) -> None:
         assert self.browser_params.browser_id is not None
         display = None
+        chrome_instrumentation = None
 
         try:
             # Start Xvfb (if necessary), webdriver, and browser
             browser_type = self.browser_params.browser.lower()
             if browser_type == "chrome":
-                driver, browser_profile_path, display = deploy_chrome.deploy_chrome(
-                    self.status_queue,
-                    self.browser_params,
-                    self.manager_params,
-                    self.crash_recovery,
+                driver, browser_profile_path, display, chrome_instrumentation = (
+                    deploy_chrome.deploy_chrome(
+                        self.status_queue,
+                        self.browser_params,
+                        self.manager_params,
+                        self.crash_recovery,
+                    )
                 )
-                # Chrome has no OpenWPM extension – use a no-op socket placeholder
+                # Chrome uses CDP instrumentation instead of the Firefox extension
                 extension_socket = None
             else:
                 driver, browser_profile_path, display = deploy_firefox.deploy_firefox(
@@ -760,7 +763,7 @@ class BrowserManager(Process):
             self.status_queue.put(("STATUS", "Browser Ready", "READY"))
             self.browser_params.profile_path = browser_profile_path
 
-            # extension_socket may be None for browsers without an OpenWPM extension (e.g. Chrome)
+            # extension_socket may be None for Chrome (CDP instrumentation used instead)
             # starts accepting arguments until told to die
             while True:
                 # no command for now -> sleep to avoid pegging CPU on blocking get
@@ -771,6 +774,8 @@ class BrowserManager(Process):
                 command: Union[ShutdownSignal, BaseCommand] = self.command_queue.get()
 
                 if isinstance(command, ShutdownSignal):
+                    if chrome_instrumentation is not None:
+                        chrome_instrumentation.close()
                     driver.quit()
                     self.status_queue.put("OK")
                     return
@@ -780,6 +785,10 @@ class BrowserManager(Process):
                     "BROWSER %i: EXECUTING COMMAND: %s"
                     % (self.browser_params.browser_id, str(command))
                 )
+
+                # Update visit_id in CDP instrumentation so records are tagged correctly
+                if chrome_instrumentation is not None and hasattr(command, "visit_id"):
+                    chrome_instrumentation.set_visit_id(command.visit_id)
 
                 # attempts to perform an action and return an OK signal
                 # if command fails for whatever reason, tell the TaskManager to
@@ -791,6 +800,12 @@ class BrowserManager(Process):
                         self.manager_params,
                         extension_socket,
                     )
+                    # After a page load, collect all instrumentation data via CDP
+                    from .commands.browser_commands import GetCommand, BrowseCommand
+                    if chrome_instrumentation is not None and isinstance(
+                        command, (GetCommand, BrowseCommand)
+                    ):
+                        chrome_instrumentation.collect_after_load()
                     self.status_queue.put("OK")
                 except WebDriverException:
                     # We handle WebDriverExceptions separately here because they
@@ -830,6 +845,11 @@ class BrowserManager(Process):
             )
             self.status_queue.put(("FAILED", pickle.dumps(sys.exc_info())))
         finally:
+            if chrome_instrumentation is not None:
+                try:
+                    chrome_instrumentation.close()
+                except Exception:
+                    pass
             if display is not None:
                 display.stop()
             return

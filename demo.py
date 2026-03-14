@@ -101,11 +101,12 @@ browser_params = [BrowserParams(display_mode=display_mode, browser=b) for b in s
 # Update browser configuration (use this for per-browser settings)
 for browser_param in browser_params:
     if browser_param.browser == "chrome":
-        # Chrome does not support the OpenWPM extension;
-        # extension-based instrumentation is therefore not available.
-        browser_param.http_instrument = False
-        browser_param.cookie_instrument = False
-        browser_param.navigation_instrument = False
+        # Chrome uses CDP-based instrumentation instead of the Firefox WebExtension.
+        # HTTP requests/responses, cookies and navigations are collected via CDP.
+        # JS instrumentation and DNS instrumentation are not yet supported for Chrome.
+        browser_param.http_instrument = True
+        browser_param.cookie_instrument = True
+        browser_param.navigation_instrument = True
         browser_param.js_instrument = False
         browser_param.dns_instrument = False
     else:
