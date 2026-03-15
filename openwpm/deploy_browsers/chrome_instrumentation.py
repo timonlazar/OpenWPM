@@ -434,6 +434,7 @@ class ChromeInstrumentation:
                     # Collect processed requests and candidate redirects so we
                     # can try to link redirects to the follow-up request ids
                     processed_url_to_reqid: Dict[str, int] = {}
+                    processed_urls_normalized: Dict[str, int] = {}  # normalized URL (no query, no trailing slash) -> req_id
                     redirect_candidates: List[Dict[str, Any]] = []
                     for r in sw_requests:
                         try:
@@ -442,6 +443,7 @@ class ChromeInstrumentation:
                                 continue
                             req_id = hash(f"{visit_id}-{url}") & 0x7FFFFFFF
                             now = _now_ts()
+
                             # Build request record
                             req_record = {
                                 "visit_id": visit_id,
@@ -471,6 +473,9 @@ class ChromeInstrumentation:
                                     req_record["req_call_stack"] = stack
                             except Exception:
                                 pass
+
+                            # CRITICAL FIX: Always send http_requests record
+                            self._send("http_requests", req_record)
 
                             # Build response record if available. Ensure resp/status/resp_headers
                             # are always defined to avoid later name errors.
@@ -503,19 +508,26 @@ class ChromeInstrumentation:
                                 "content_hash": None,
                             }
 
-                            # If response looks like JavaScript (content-type or .js) we
-                            # attempt to capture and store the response body via the
-                            # StorageController's page_content channel. This mirrors the
-                            # Firefox extension behaviour.
+                            # If response looks like JavaScript (content-type, resource_type, or .js extension)
+                            # we attempt to capture and store the response body via the StorageController's
+                            # page_content channel. This mirrors the Firefox extension behaviour.
                             try:
-                                # Normalize content type and decide if this is JS
+                                # Check multiple triggers for JS detection
                                 content_type = "".join([resp_headers.get("Content-Type", "")]) if resp_headers else ""
+                                resource_type = getattr(r, "resource_type", "").lower() if hasattr(r, "resource_type") else ""
+                                url_lower = url.lower().split('?')[0]
+
                                 is_js = False
+                                # Trigger 1: Content-Type header contains javascript/ecmascript
                                 if content_type:
                                     ct = content_type.lower()
                                     if any(x in ct for x in ("javascript", "ecmascript")):
                                         is_js = True
-                                if not is_js and url.lower().split('?')[0].endswith('.js'):
+                                # Trigger 2: .js file extension
+                                if not is_js and url_lower.endswith('.js'):
+                                    is_js = True
+                                # Trigger 3: resource_type == 'script' (Chrome-specific, more reliable)
+                                if not is_js and resource_type == 'script':
                                     is_js = True
 
                                 # Try to obtain raw body from selenium-wire response
@@ -570,9 +582,12 @@ class ChromeInstrumentation:
                             except Exception:
                                 pass
 
-                            # record mapping from URL to req_id for later redirect linking
+                            # Record mapping from URL to req_id for later redirect linking
                             try:
                                 processed_url_to_reqid[url] = req_id
+                                # Also store normalized form (no query params, no trailing slash)
+                                url_normalized = url.split('?')[0].rstrip('/')
+                                processed_urls_normalized[url_normalized] = req_id
                             except Exception:
                                 pass
 
@@ -580,6 +595,7 @@ class ChromeInstrumentation:
                             self._send("http_responses", resp_record)
                         except Exception:
                             continue
+
                     # After processing selenium-wire queue, try to resolve redirect targets
                     try:
                         for cand in redirect_candidates:
@@ -589,17 +605,30 @@ class ChromeInstrumentation:
                             except Exception:
                                 new_loc = raw_loc
 
-                            # Try to find a matching processed request id
-                            new_req_id = processed_url_to_reqid.get(new_loc)
-                            # Normalized no-query form
-                            new_loc_no_q = new_loc.split('?')[0]
+                            # Try to find a matching processed request id with multiple strategies
+                            new_req_id = None
+
+                            # Strategy 1: Exact match
                             if new_req_id is None:
+                                new_req_id = processed_url_to_reqid.get(new_loc)
+
+                            # Strategy 2: Match without query params
+                            if new_req_id is None:
+                                new_loc_normalized = new_loc.split('?')[0].rstrip('/')
+                                new_req_id = processed_urls_normalized.get(new_loc_normalized)
+
+                            # Strategy 3: Try both forms without query
+                            if new_req_id is None:
+                                new_loc_no_q = new_loc.split('?')[0]
                                 new_req_id = processed_url_to_reqid.get(new_loc_no_q)
+
+                            # Strategy 4: Fallback suffix/prefix match
                             if new_req_id is None:
-                                # Fallback: try suffix match (path only) since some requests may differ by scheme/host normalization
+                                new_loc_normalized = new_loc.split('?')[0].rstrip('/')
                                 for k, v in processed_url_to_reqid.items():
                                     try:
-                                        if k.endswith(new_loc) or new_loc.endswith(k) or k.split('?')[0].endswith(new_loc_no_q):
+                                        k_normalized = k.split('?')[0].rstrip('/')
+                                        if k_normalized == new_loc_normalized or k_normalized.endswith(new_loc_normalized) or new_loc_normalized.endswith(k_normalized):
                                             new_req_id = v
                                             break
                                     except Exception:

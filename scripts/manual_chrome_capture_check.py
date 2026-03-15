@@ -1,6 +1,6 @@
 """Manual check for ChromeInstrumentation _collect_network using mocks.
 
-Run with: python scripts/manual_chrome_capture_check.py
+Run with: python -c "import sys; sys.path.insert(0, '.'); exec(open('scripts/manual_chrome_capture_check.py').read())"
 
 This script constructs a ChromeInstrumentation instance without running its
 constructor, injects a mock driver with selenium-wire-like `requests`, and a
@@ -10,24 +10,17 @@ _collect_network(visit_id) and prints the recorded messages.
 from types import SimpleNamespace
 import base64
 import json
-import importlib.util
 import sys
 from pathlib import Path
 
-# Load the chrome_instrumentation module dynamically but strip selenium import
-ci_path = Path(__file__).resolve().parents[1] / "openwpm" / "deploy_browsers" / "chrome_instrumentation.py"
-ci_src = ci_path.read_text(encoding="utf-8")
-# Remove or neutralize `from selenium.webdriver import Chrome` which requires selenium installed
-ci_src = ci_src.replace("from selenium.webdriver import Chrome", "# selenium import removed for mock testing")
-# Patch relative imports so the module can be exec'd standalone
-ci_src = ci_src.replace("from ..config import BrowserParamsInternal, ManagerParamsInternal", "import openwpm.config as _cfg\nBrowserParamsInternal = _cfg.BrowserParamsInternal\nManagerParamsInternal = _cfg.ManagerParamsInternal")
-ci_src = ci_src.replace("from ..socket_interface import ClientSocket", "import openwpm.socket_interface as _sock_if\nClientSocket = _sock_if.ClientSocket")
-ci_src = ci_src.replace("from ..types import VisitId", "import openwpm.types as _tmod\nVisitId = _tmod.VisitId")
+# Add project root to path so we can import openwpm
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-spec = importlib.util.spec_from_loader("ci_mock", loader=None)
-ci_mod = importlib.util.module_from_spec(spec)
-exec(compile(ci_src, str(ci_path), 'exec'), ci_mod.__dict__)
-ChromeInstrumentation = ci_mod.ChromeInstrumentation
+# Now we can import the actual modules
+from openwpm.config import BrowserParamsInternal, ManagerParamsInternal
+from openwpm.socket_interface import ClientSocket
+from openwpm.types import VisitId
+from openwpm.deploy_browsers.chrome_instrumentation import ChromeInstrumentation
 
 # Create mock response/request objects similar to selenium-wire's objects
 class MockResponse:
@@ -69,20 +62,20 @@ class MockSocket:
 
 def run_manual_check():
     # Build mock selenium-wire requests
-    # 1) JS resource with body
+    # 1) JS resource with body (using resource_type='script' for Chrome detection)
     js_body = b"console.log('hello world'); var x = 1;"
     resp_js = MockResponse(status_code=200, headers={'Content-Type': 'application/javascript'}, body=js_body)
     req_js = MockRequest(url='https://example.com/static/app.js', method='GET', headers={'Referer': 'https://example.com'}, response=resp_js, resource_type='script', body=None)
 
-    # 2) Redirect response (relative Location)
+    # 2) Redirect response (relative Location, status 302)
     resp_redir = MockResponse(status_code=302, headers={'Location': '/redirected'}, body=b'')
     req_redir = MockRequest(url='https://example.com/login', method='GET', headers={}, response=resp_redir)
 
-    # 3) Target request for redirect
+    # 3) Target request for redirect (should be linked by normalized URL matching)
     resp_target = MockResponse(status_code=200, headers={'Content-Type': 'text/html'}, body=b'<html>OK</html>')
     req_target = MockRequest(url='https://example.com/redirected', method='GET', headers={}, response=resp_target)
 
-    mock_driver = MockDriver(current_url='https://example.com/', requests=[req_js, req_redir, req_target])
+    mock_driver = MockDriver(current_url='https://example.com/redirected', requests=[req_js, req_redir, req_target])
 
     # Create an instance of ChromeInstrumentation without calling __init__
     instr = object.__new__(ChromeInstrumentation)
@@ -99,11 +92,44 @@ def run_manual_check():
         instr._collect_network(1)
     except Exception as e:
         print('Error during _collect_network:', e)
+        import traceback
+        traceback.print_exc()
 
     # Print summary of messages collected
-    print('\nSummary of messages captured by MockSocket:')
-    for table, rec in instr._sock.records:
-        print(f'- {table}: {rec}')
+    print('\n' + '='*80)
+    print('CHROME INSTRUMENTATION VERIFICATION RESULTS')
+    print('='*80)
+
+    http_requests = [rec for table, rec in instr._sock.records if table == 'http_requests']
+    http_responses = [rec for table, rec in instr._sock.records if table == 'http_responses']
+    http_redirects = [rec for table, rec in instr._sock.records if table == 'http_redirects']
+    page_contents = [rec for table, rec in instr._sock.records if table == 'page_content']
+
+    print(f'\n✓ HTTP Requests ({len(http_requests)}):')
+    for rec in http_requests:
+        print(f'  - {rec.get("url", "?")} [resource_type: {rec.get("resource_type")}]')
+
+    print(f'\n✓ HTTP Responses ({len(http_responses)}):')
+    for rec in http_responses:
+        status = rec.get("response_status", "?")
+        has_hash = "YES" if rec.get("content_hash") else "NO"
+        print(f'  - {rec.get("url", "?")} [status: {status}, has_content: {has_hash}]')
+
+    print(f'\n✓ HTTP Redirects ({len(http_redirects)}):')
+    for rec in http_redirects:
+        print(f'  - {rec.get("old_request_url", "?")} -> {rec.get("new_request_url", "?")}')
+
+    print(f'\n✓ Page Content / JS Bodies ({len(page_contents)}):')
+    for rec in page_contents:
+        if isinstance(rec, tuple):
+            b64, chash = rec
+            print(f'  - Content hash: {chash}, Base64 size: {len(b64)} chars')
+        else:
+            print(f'  - {rec}')
+
+    print('\n' + '='*80)
+    print('SUMMARY: Expected 3 http_requests, 1 redirect, 1 JS body capture')
+    print('='*80)
 
 if __name__ == '__main__':
     run_manual_check()
