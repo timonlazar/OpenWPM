@@ -22,17 +22,24 @@ What IS collected per page visit (triggered in collect_after_load()):
   • Navigation history entry → navigations
 """
 
+import base64
 import json
 import logging
 import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from urllib.parse import urljoin
 
 from selenium.webdriver import Chrome
 
 from ..config import BrowserParamsInternal, ManagerParamsInternal
 from ..socket_interface import ClientSocket
 from ..types import VisitId
+import hashlib
+
+# Maximum number of bytes to store for a response body (safe default to avoid
+# unbounded memory usage). Responses larger than this will not be stored.
+MAX_CONTENT_BYTES = 2 * 1024 * 1024  # 2 MiB
 
 logger = logging.getLogger("openwpm")
 
@@ -410,6 +417,13 @@ class ChromeInstrumentation:
         and send as 'dns' records to approximate Firefox DNS instrumentation.
         """
         try:
+            # Determine top-level URL early so we can resolve relative Location headers
+            top_level_url = ""
+            try:
+                top_level_url = self.driver.current_url
+            except Exception:
+                top_level_url = ""
+
             # If selenium-wire is available, prefer using driver.requests for
             # richer event-based data (full headers, response code, bodies).
             entries: List[Dict] = []
@@ -417,6 +431,10 @@ class ChromeInstrumentation:
                 # selenium-wire exposes .requests containing an ordered list of requests
                 if hasattr(self.driver, "requests"):
                     sw_requests = getattr(self.driver, "requests") or []
+                    # Collect processed requests and candidate redirects so we
+                    # can try to link redirects to the follow-up request ids
+                    processed_url_to_reqid: Dict[str, int] = {}
+                    redirect_candidates: List[Dict[str, Any]] = []
                     for r in sw_requests:
                         try:
                             url = getattr(r, "url", "")
@@ -454,32 +472,160 @@ class ChromeInstrumentation:
                             except Exception:
                                 pass
 
-                            self._send("http_requests", req_record)
-
-                            # Build response record if available
+                            # Build response record if available. Ensure resp/status/resp_headers
+                            # are always defined to avoid later name errors.
+                            resp = None
+                            status = 0
+                            resp_headers: Dict[str, Any] = {}
                             try:
+                                # Obtain response object, headers and status (may be None)
                                 resp = getattr(r, "response", None)
                                 status = getattr(resp, "status_code", 0) if resp is not None else 0
                                 resp_headers = dict(getattr(resp, "headers", {}) if resp is not None else {})
-                                resp_record = {
-                                    "visit_id": visit_id,
-                                    "browser_id": self.browser_id,
-                                    "url": url,
-                                    "method": getattr(r, "method", "GET"),
-                                    "response_status": status,
-                                    "response_status_text": "",
-                                    "is_cached": False,
-                                    "headers": json.dumps(resp_headers),
-                                    "request_id": req_id,
-                                    "location": resp_headers.get("Location") if resp_headers else None,
-                                    "time_stamp": now,
-                                    "content_hash": None,
-                                }
-                                self._send("http_responses", resp_record)
+                            except Exception:
+                                # Keep defaults if anything fails
+                                resp = None
+                                status = 0
+                                resp_headers = {}
+
+                            resp_record = {
+                                "visit_id": visit_id,
+                                "browser_id": self.browser_id,
+                                "url": url,
+                                "method": getattr(r, "method", "GET"),
+                                "response_status": status,
+                                "response_status_text": "",
+                                "is_cached": False,
+                                "headers": json.dumps(resp_headers) if resp_headers else "{}",
+                                "request_id": req_id,
+                                "location": resp_headers.get("Location") if resp_headers else None,
+                                "time_stamp": now,
+                                "content_hash": None,
+                            }
+
+                            # If response looks like JavaScript (content-type or .js) we
+                            # attempt to capture and store the response body via the
+                            # StorageController's page_content channel. This mirrors the
+                            # Firefox extension behaviour.
+                            try:
+                                # Normalize content type and decide if this is JS
+                                content_type = "".join([resp_headers.get("Content-Type", "")]) if resp_headers else ""
+                                is_js = False
+                                if content_type:
+                                    ct = content_type.lower()
+                                    if any(x in ct for x in ("javascript", "ecmascript")):
+                                        is_js = True
+                                if not is_js and url.lower().split('?')[0].endswith('.js'):
+                                    is_js = True
+
+                                # Try to obtain raw body from selenium-wire response
+                                body = None
+                                if resp is not None:
+                                    # selenium-wire usually exposes `body` as bytes
+                                    body = getattr(resp, "body", None) or getattr(resp, "raw_body", None) or getattr(resp, "text", None)
+
+                                # If body is text, convert to bytes
+                                if body is not None and isinstance(body, str):
+                                    try:
+                                        body = body.encode("utf-8")
+                                    except Exception:
+                                        body = None
+
+                                if is_js and body is not None and isinstance(body, (bytes, bytearray)):
+                                    # Respect size limit
+                                    if len(body) <= MAX_CONTENT_BYTES:
+                                        chash = hashlib.md5(body).hexdigest()
+                                        resp_record["content_hash"] = chash
+                                        try:
+                                            b64 = base64.b64encode(body).decode("ascii")
+                                            # Send content to storage controller using the
+                                            # special page_content channel expected by the
+                                            # StorageController
+                                            try:
+                                                self._sock.send(("page_content", (b64, chash)))
+                                            except Exception:
+                                                # Fall back to sending via _send if socket has issues
+                                                self._send("page_content", {"content": b64, "content_hash": chash})
+                                        except Exception:
+                                            # If encoding fails, leave content_hash None
+                                            resp_record["content_hash"] = None
+                                    else:
+                                        # Too large, skip storing body but record that we skipped
+                                        resp_record["content_hash"] = "<skipped>"
                             except Exception:
                                 pass
+
+                            # If response is a redirect (3xx) create a candidate redirect
+                            try:
+                                if 300 <= status < 400 and resp_headers and resp_headers.get("Location"):
+                                    raw_loc = resp_headers.get("Location")
+                                    redirect_candidates.append({
+                                        "old_request_url": url,
+                                        "old_request_id": req_id,
+                                        "raw_location": raw_loc,
+                                        "response_status": status,
+                                        "headers": resp_headers,
+                                        "time_stamp": now,
+                                    })
+                            except Exception:
+                                pass
+
+                            # record mapping from URL to req_id for later redirect linking
+                            try:
+                                processed_url_to_reqid[url] = req_id
+                            except Exception:
+                                pass
+
+                            # Send the response record once
+                            self._send("http_responses", resp_record)
                         except Exception:
                             continue
+                    # After processing selenium-wire queue, try to resolve redirect targets
+                    try:
+                        for cand in redirect_candidates:
+                            raw_loc = cand.get("raw_location")
+                            try:
+                                new_loc = urljoin(top_level_url or cand.get("old_request_url"), raw_loc)
+                            except Exception:
+                                new_loc = raw_loc
+
+                            # Try to find a matching processed request id
+                            new_req_id = processed_url_to_reqid.get(new_loc)
+                            # Normalized no-query form
+                            new_loc_no_q = new_loc.split('?')[0]
+                            if new_req_id is None:
+                                new_req_id = processed_url_to_reqid.get(new_loc_no_q)
+                            if new_req_id is None:
+                                # Fallback: try suffix match (path only) since some requests may differ by scheme/host normalization
+                                for k, v in processed_url_to_reqid.items():
+                                    try:
+                                        if k.endswith(new_loc) or new_loc.endswith(k) or k.split('?')[0].endswith(new_loc_no_q):
+                                            new_req_id = v
+                                            break
+                                    except Exception:
+                                        continue
+
+                            redirect_rec = {
+                                "visit_id": visit_id,
+                                "browser_id": self.browser_id,
+                                "old_request_url": cand.get("old_request_url"),
+                                "old_request_id": cand.get("old_request_id"),
+                                "new_request_url": new_loc,
+                                "new_request_id": new_req_id,
+                                "extension_session_uuid": None,
+                                "event_ordinal": None,
+                                "window_id": None,
+                                "tab_id": None,
+                                "frame_id": None,
+                                "response_status": cand.get("response_status"),
+                                "response_status_text": "",
+                                "headers": json.dumps(cand.get("headers") or {}),
+                                "time_stamp": cand.get("time_stamp"),
+                            }
+                            self._send("http_redirects", redirect_rec)
+                    except Exception:
+                        pass
+
                     # After processing selenium-wire queue, clear it for next visit
                     try:
                         if hasattr(self.driver, "requests") and hasattr(self.driver.requests, "clear"):

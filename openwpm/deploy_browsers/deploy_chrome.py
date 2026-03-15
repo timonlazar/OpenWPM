@@ -123,8 +123,10 @@ def deploy_chrome(
 
     # Prefer selenium-wire if available to capture a richer network request/response stream
     if SW_AVAILABLE and wire_webdriver is not None:
-        # selenium-wire accepts the same options and service args, and exposes `driver.requests`
-        driver = wire_webdriver.Chrome(options=co, service=service)
+        # selenium-wire accepts the same options and service args, and exposes `driver.requests`.
+        # Pass a small options dict to make response bodies easier to access.
+        seleniumwire_opts = {"disable_encoding": True}
+        driver = wire_webdriver.Chrome(seleniumwire_options=seleniumwire_opts, options=co, service=service)
     else:
         driver = webdriver.Chrome(options=co, service=service)
     driver.set_window_size(*DEFAULT_SCREEN_RES)
