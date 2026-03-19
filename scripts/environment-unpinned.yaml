@@ -32,4 +32,7 @@ dependencies:
         - dataclasses-json
         - domain-utils
         - jsonschema
+        - netlib
+        - python-dotenv
+        - selenium-wire
         - tranco

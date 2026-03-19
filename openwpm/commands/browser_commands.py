@@ -109,6 +109,13 @@ def tab_restart_browser(webdriver):
     assert len(webdriver.window_handles) == 1
     webdriver.switch_to.window(webdriver.window_handles[0])
 
+    instrumentation = getattr(webdriver, "openwpm_chrome_instrumentation", None)
+    if instrumentation is not None:
+        try:
+            instrumentation.prepare_page_instrumentation()
+        except Exception:
+            logger.debug("Failed to prepare Chrome instrumentation after tab restart")
+
 
 class GetCommand(BaseCommand):
     """goes to <url> using the given <webdriver> instance"""

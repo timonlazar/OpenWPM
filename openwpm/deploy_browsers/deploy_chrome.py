@@ -32,7 +32,7 @@ def deploy_chrome(
 ) -> Tuple[webdriver.Chrome, Path, Optional[Display], Optional[ChromeInstrumentation]]:
     """
     Launches a Chrome instance with parameters set by the input browser_params.
-    Instrumentation (HTTP, cookies, navigation) is collected via the Chrome
+    Instrumentation (HTTP, cookies, navigation, JS, DNS) is collected via the Chrome
     DevTools Protocol (CDP) instead of the Firefox WebExtension.
     """
     assert browser_params.browser_id is not None
@@ -94,6 +94,17 @@ def deploy_chrome(
     # Required for CDP event listeners to work correctly
     co.add_argument("--remote-allow-origins=*")
 
+    # Enable performance logs so ChromeInstrumentation can consume
+    # Network.* events (including redirect chains and response bodies).
+    co.set_capability("goog:loggingPrefs", {"performance": "ALL"})
+    co.add_experimental_option(
+        "perfLoggingPrefs",
+        {
+            "enableNetwork": True,
+            "enablePage": False,
+        },
+    )
+
     # Third-party cookies
     if browser_params.tp_cookies.lower() == "never":
         co.add_argument("--block-new-web-contents")
@@ -150,10 +161,13 @@ def deploy_chrome(
         browser_params.http_instrument
         or browser_params.cookie_instrument
         or browser_params.navigation_instrument
+        or browser_params.js_instrument
+        or browser_params.dns_instrument
     )
     if any_instrument:
         try:
             instrumentation = ChromeInstrumentation(driver, browser_params, manager_params)
+            setattr(driver, "openwpm_chrome_instrumentation", instrumentation)
             logger.debug(
                 "BROWSER %i: CDP instrumentation initialized." % browser_params.browser_id
             )

@@ -82,7 +82,7 @@ if args.tranco:
     print("Loading tranco top sites list...")
     t = tranco.Tranco(cache=True, cache_dir=".tranco")
     latest_list = t.list(date="2025-08-05")
-    sites = ["http://" + x for x in latest_list.top(200)]
+    sites = ["http://" + x for x in latest_list.top(10)]
 
 date_str = datetime.now().strftime("%Y-%m-%d")
 sqlite_path = Path(f"./datadir/crawl-data-{date_str}.sqlite")
