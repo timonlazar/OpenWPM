@@ -6,12 +6,6 @@ from typing import Optional, Tuple
 
 from multiprocess import Queue
 from pyvirtualdisplay import Display
-try:
-    from seleniumwire import webdriver as wire_webdriver  # type: ignore
-    SW_AVAILABLE = True
-except Exception:
-    wire_webdriver = None
-    SW_AVAILABLE = False
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -132,14 +126,7 @@ def deploy_chrome(
         # Fall back to selenium's built-in driver management (selenium >= 4.6)
         service = Service()
 
-    # Prefer selenium-wire if available to capture a richer network request/response stream
-    if SW_AVAILABLE and wire_webdriver is not None:
-        # selenium-wire accepts the same options and service args, and exposes `driver.requests`.
-        # Pass a small options dict to make response bodies easier to access.
-        seleniumwire_opts = {"disable_encoding": True}
-        driver = wire_webdriver.Chrome(seleniumwire_options=seleniumwire_opts, options=co, service=service)
-    else:
-        driver = webdriver.Chrome(options=co, service=service)
+    driver = webdriver.Chrome(options=co, service=service)
     driver.set_window_size(*DEFAULT_SCREEN_RES)
 
     logger.debug(

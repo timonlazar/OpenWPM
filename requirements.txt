@@ -1,5 +1,4 @@
 selenium>=4.6
-selenium-wire>=5.0
 netlib==0.17
 psycopg2-binary
 python-dotenv
