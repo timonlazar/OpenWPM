@@ -431,7 +431,7 @@ class ChromeInstrumentation:
                     }
                     self._send("javascript", js_record)
 
-                    if url and stack:
+                    if url and stack and self.browser_params.callstack_instrument:
                         try:
                             req_id = hash(f"{visit_id}-{url}") & 0x7FFFFFFF
                             self._send(
@@ -495,7 +495,7 @@ class ChromeInstrumentation:
                 self._send("javascript", js_record)
 
                 # If the event correlates to a network URL, emit a callstacks row
-                if url and stack:
+                if url and stack and self.browser_params.callstack_instrument:
                     try:
                         req_id = hash(f"{visit_id}-{url}") & 0x7FFFFFFF
                         cs_rec = {
@@ -953,7 +953,7 @@ class ChromeInstrumentation:
                 "top_level_url": top_url,
                 "method": "GET",
                 "referrer": "",
-                "headers": "{}",
+                "headers": _headers_to_pairs_json([]),
                 "request_id": req_id,
                 "resource_type": resource_type,
                 "post_body": None,
@@ -994,7 +994,7 @@ class ChromeInstrumentation:
                 "response_status": status,
                 "response_status_text": "",
                 "is_cached": entry.get("transferSize", 1) == 0,
-                "headers": "{}",
+                "headers": _headers_to_pairs_json([]),
                 "request_id": req_id,
                 "location": "",
                 "time_stamp": now,
@@ -1022,7 +1022,7 @@ class ChromeInstrumentation:
                 "new_request_id": "",
                 "response_status": 302,
                 "response_status_text": "Found",
-                "headers": "{}",
+                "headers": _headers_to_pairs_json([]),
                 "time_stamp": now,
             }
             self._send("http_redirects", redirect_record)

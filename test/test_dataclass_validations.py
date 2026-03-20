@@ -35,6 +35,9 @@ def test_browser_type():
     browser_params.browser = "firefox"
     validate_browser_params(browser_params)
 
+    browser_params.browser = "chrome"
+    validate_browser_params(browser_params)
+
 
 def test_tp_cookies_opt():
     browser_params = BrowserParams()

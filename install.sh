@@ -59,10 +59,6 @@ fi
 echo 'Activating environment.'
 conda activate openwpm
 
-if [ -f requirements.txt ]; then
-  echo 'Installing pip dependencies from requirements.txt.'
-  python -m pip install --disable-pip-version-check -r requirements.txt
-fi
 
 echo 'Installing firefox.'
 ./scripts/install-firefox.sh

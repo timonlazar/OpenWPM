@@ -51,7 +51,7 @@ def dump_profile(
     tar.close()
 
     # Only enforce Firefox-specific SQLite files for Firefox profiles
-    if browser_params.browser.lower() != "chrome":
+    if browser_params.browser.lower() == "firefox":
         required_items = [
             "cookies.sqlite",  # cookies
             "places.sqlite",  # history
@@ -95,7 +95,7 @@ class DumpProfileCommand(BaseCommand):
         if self.close_webdriver:
             webdriver.close()
             # SQLite checkpoint wait is only relevant for Firefox
-            if browser_params.browser.lower() != "chrome":
+            if browser_params.browser.lower() == "firefox":
                 sleep_until_sqlite_checkpoint(browser_params.profile_path)
 
         assert browser_params.profile_path is not None

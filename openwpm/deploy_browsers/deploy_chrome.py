@@ -103,18 +103,23 @@ def deploy_chrome(
     if browser_params.tp_cookies.lower() == "never":
         co.add_argument("--block-new-web-contents")
 
+    chrome_prefs = {}
+
     # DNT header
     if browser_params.donottrack:
-        co.add_experimental_option("prefs", {"enable_do_not_track": True})
+        chrome_prefs["enable_do_not_track"] = True
 
-    # Apply any user-specified prefs
+    # Apply user-specified Chrome profile preferences.
     if browser_params.prefs:
         for name, value in browser_params.prefs.items():
             logger.info(
                 "BROWSER %i: Setting custom Chrome preference: %s = %s"
                 % (browser_params.browser_id, name, value)
             )
-            co.add_argument(f"--{name}={value}")
+            chrome_prefs[name] = value
+
+    if chrome_prefs:
+        co.add_experimental_option("prefs", chrome_prefs)
 
     status_queue.put(("STATUS", "Launch Attempted", None))
 

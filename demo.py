@@ -82,7 +82,7 @@ if args.tranco:
     print("Loading tranco top sites list...")
     t = tranco.Tranco(cache=True, cache_dir=".tranco")
     latest_list = t.list(date="2025-08-05")
-    sites = ["http://" + x for x in latest_list.top(10)]
+    sites = ["http://" + x for x in latest_list.top(200)]
 
 date_str = datetime.now().strftime("%Y-%m-%d")
 sqlite_path = Path(f"./datadir/crawl-data-{date_str}.sqlite")
@@ -102,8 +102,8 @@ browser_params = [BrowserParams(display_mode=display_mode, browser=b) for b in s
 for browser_param in browser_params:
     if browser_param.browser == "chrome":
         # Chrome uses CDP-based instrumentation instead of the Firefox WebExtension.
-        # HTTP requests/responses, cookies and navigations are collected via CDP.
-        # JS instrumentation and DNS instrumentation are not yet supported for Chrome.
+        # HTTP requests/responses, cookies, navigations, JS events, and DNS records
+        # are collected via the Chrome instrumentation pipeline.
         browser_param.http_instrument = True
         browser_param.cookie_instrument = True
         browser_param.navigation_instrument = True

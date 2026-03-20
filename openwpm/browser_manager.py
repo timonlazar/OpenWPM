@@ -20,7 +20,7 @@ from selenium.common.exceptions import WebDriverException
 from tblib import Traceback, pickling_support
 
 from .command_sequence import CommandSequence
-from .commands.browser_commands import FinalizeCommand
+from .commands.browser_commands import BrowseCommand, FinalizeCommand, GetCommand
 from .commands.profile_commands import dump_profile
 from .commands.types import BaseCommand, ShutdownSignal
 from .commands.utils.webdriver_utils import parse_neterror
@@ -833,7 +833,6 @@ class BrowserManager(Process):
                         extension_socket,
                     )
                     # After a page load, collect all instrumentation data via CDP
-                    from .commands.browser_commands import GetCommand, BrowseCommand
                     if chrome_instrumentation is not None and isinstance(
                         command, (GetCommand, BrowseCommand)
                     ):
