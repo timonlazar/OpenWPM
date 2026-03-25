@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # This script automates the creation and installation
 # of the conda environmnet. It's useful for working
@@ -17,29 +17,48 @@
 # --skip-create: Doesn't change the openwpm conda environment
 
 
-set -e
+set -euo pipefail
+
+SKIP_CREATE=false
+
+for arg in "$@"; do
+  case "$arg" in
+    --skip-create)
+      SKIP_CREATE=true
+      ;;
+    *)
+      echo "Unknown argument: $arg"
+      echo "Usage: ./install.sh [--skip-create]"
+      exit 1
+      ;;
+  esac
+done
+
+create_env() {
+  case "$(uname -s)" in
+    Darwin)
+      echo '...using the osx-64 channel for MacOS dependencies'
+      CONDA_SUBDIR=osx-64 PYTHONNOUSERSITE=True conda env create --yes -q -f environment.yaml
+      ;;
+    *)
+      PYTHONNOUSERSITE=True conda env create --yes -q -f environment.yaml
+      ;;
+  esac
+}
 
 # Make conda available to shell script
 eval "$(conda shell.bash hook)"
 
-if [ "$1" != "--skip-create" ]; then
+if [ "$SKIP_CREATE" = false ]; then
   echo 'Creating / Overwriting openwpm conda environment.'
   # `PYTHONNOUSERSITE` set so python ignores local user site libraries when building the env
   # See: https://github.com/openwpm/OpenWPM/pull/682#issuecomment-645648939
-  case "$(uname -s)" in
-  Darwin)
-    echo '...using the osx-64 channel for MacOS dependencies'
-    CONDA_SUBDIR=osx-64 PYTHONNOUSERSITE=True conda env create --yes -q -f environment.yaml
-    ;;
-  *)
-    PYTHONNOUSERSITE=True conda env create --yes -q -f environment.yaml
-    ;;
-  esac
-
+  create_env
 fi
 
 echo 'Activating environment.'
 conda activate openwpm
+
 
 echo 'Installing firefox.'
 ./scripts/install-firefox.sh

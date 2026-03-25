@@ -50,18 +50,20 @@ def dump_profile(
     archived_items = tar.getnames()
     tar.close()
 
-    required_items = [
-        "cookies.sqlite",  # cookies
-        "places.sqlite",  # history
-        "webappsstore.sqlite",  # localStorage
-    ]
-    for item in required_items:
-        if item not in archived_items:
-            logger.critical(
-                "BROWSER %i: %s NOT FOUND IN profile folder"
-                % (browser_params.browser_id, item)
-            )
-            raise RuntimeError("Profile dump not successful")
+    # Only enforce Firefox-specific SQLite files for Firefox profiles
+    if browser_params.browser.lower() == "firefox":
+        required_items = [
+            "cookies.sqlite",  # cookies
+            "places.sqlite",  # history
+            "webappsstore.sqlite",  # localStorage
+        ]
+        for item in required_items:
+            if item not in archived_items:
+                logger.critical(
+                    "BROWSER %i: %s NOT FOUND IN profile folder"
+                    % (browser_params.browser_id, item)
+                )
+                raise RuntimeError("Profile dump not successful")
 
 
 class DumpProfileCommand(BaseCommand):
@@ -92,7 +94,9 @@ class DumpProfileCommand(BaseCommand):
         # if this is a dump on close, close the webdriver and wait for checkpoint
         if self.close_webdriver:
             webdriver.close()
-            sleep_until_sqlite_checkpoint(browser_params.profile_path)
+            # SQLite checkpoint wait is only relevant for Firefox
+            if browser_params.browser.lower() == "firefox":
+                sleep_until_sqlite_checkpoint(browser_params.profile_path)
 
         assert browser_params.profile_path is not None
         dump_profile(

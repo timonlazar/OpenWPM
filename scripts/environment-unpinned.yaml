@@ -32,4 +32,6 @@ dependencies:
         - dataclasses-json
         - domain-utils
         - jsonschema
+        - netlib
+        - python-dotenv
         - tranco

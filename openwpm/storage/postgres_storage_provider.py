@@ -108,10 +108,13 @@ class PostgresStorageProvider(StructuredStorageProvider):
         # json-encode lists/dicts
         if isinstance(v, (dict, list)):
             try:
-                return json.dumps(v, ensure_ascii=False)
+                return json.dumps(v, ensure_ascii=False).replace("\x00", "")
             except Exception:
                 self.logger.exception("Failed to json-encode value for key %s", key)
-                return str(v)
+                return str(v).replace("\x00", "")
+
+        if isinstance(v, str):
+            return v.replace("\x00", "")
 
         # binary payloads
         if isinstance(v, (bytes, bytearray)):

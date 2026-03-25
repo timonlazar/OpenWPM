@@ -20,12 +20,13 @@ from selenium.common.exceptions import WebDriverException
 from tblib import Traceback, pickling_support
 
 from .command_sequence import CommandSequence
-from .commands.browser_commands import FinalizeCommand
+from .commands.browser_commands import BrowseCommand, FinalizeCommand, GetCommand
 from .commands.profile_commands import dump_profile
 from .commands.types import BaseCommand, ShutdownSignal
 from .commands.utils.webdriver_utils import parse_neterror
 from .config import BrowserParamsInternal, ManagerParamsInternal
 from .deploy_browsers import deploy_firefox
+from .deploy_browsers import deploy_chrome
 from .errors import BrowserConfigError, BrowserCrashError, ProfileLoadError
 from .socket_interface import ClientSocket
 from .storage.storage_providers import TableName
@@ -499,6 +500,38 @@ class BrowserManagerHandle:
         # internal buffers to drain. Stopgap in support of #135
         time.sleep(2)
 
+        # If this browser type does not use the extension (e.g. Chrome), the
+        # extension won't send a Finalize message to the StorageController.
+        # In that case, explicitly finalize the visit here as successful
+        # (unless a restart was already required, in which case it was
+        # finalized as unsuccessful earlier).
+        try:
+            browser_type = (
+                self.browser_params.browser.lower()
+                if self.browser_params and self.browser_params.browser
+                else ""
+            )
+        except Exception:
+            browser_type = ""
+
+        if browser_type == "chrome":
+            # If a restart was requested due to an error, the visit has already
+            # been finalized with success=False above. Only finalize here when
+            # we did not require a restart.
+            if not self.restart_required:
+                try:
+                    task_manager.sock.finalize_visit_id(
+                        visit_id=self.curr_visit_id, success=True
+                    )
+                except Exception:
+                    # If finalization fails here we log and continue; the
+                    # StorageController will eventually finalize on shutdown.
+                    self.logger.exception(
+                        "BROWSER %i: Failed to finalize visit_id %s for chrome",
+                        self.browser_id,
+                        self.curr_visit_id,
+                    )
+
         if task_manager.closing:
             return
 
@@ -729,17 +762,30 @@ class BrowserManager(Process):
     def run(self) -> None:
         assert self.browser_params.browser_id is not None
         display = None
+        chrome_instrumentation = None
 
         try:
             # Start Xvfb (if necessary), webdriver, and browser
-            driver, browser_profile_path, display = deploy_firefox.deploy_firefox(
-                self.status_queue,
-                self.browser_params,
-                self.manager_params,
-                self.crash_recovery,
-            )
-
-            extension_socket = self._start_extension(browser_profile_path)
+            browser_type = self.browser_params.browser.lower()
+            if browser_type == "chrome":
+                driver, browser_profile_path, display, chrome_instrumentation = (
+                    deploy_chrome.deploy_chrome(
+                        self.status_queue,
+                        self.browser_params,
+                        self.manager_params,
+                        self.crash_recovery,
+                    )
+                )
+                # Chrome uses CDP instrumentation instead of the Firefox extension
+                extension_socket = None
+            else:
+                driver, browser_profile_path, display = deploy_firefox.deploy_firefox(
+                    self.status_queue,
+                    self.browser_params,
+                    self.manager_params,
+                    self.crash_recovery,
+                )
+                extension_socket = self._start_extension(browser_profile_path)
 
             self.logger.debug(
                 "BROWSER %i: BrowserManager ready." % self.browser_params.browser_id
@@ -749,7 +795,7 @@ class BrowserManager(Process):
             self.status_queue.put(("STATUS", "Browser Ready", "READY"))
             self.browser_params.profile_path = browser_profile_path
 
-            assert extension_socket is not None
+            # extension_socket may be None for Chrome (CDP instrumentation used instead)
             # starts accepting arguments until told to die
             while True:
                 # no command for now -> sleep to avoid pegging CPU on blocking get
@@ -760,6 +806,8 @@ class BrowserManager(Process):
                 command: Union[ShutdownSignal, BaseCommand] = self.command_queue.get()
 
                 if isinstance(command, ShutdownSignal):
+                    if chrome_instrumentation is not None:
+                        chrome_instrumentation.close()
                     driver.quit()
                     self.status_queue.put("OK")
                     return
@@ -769,6 +817,10 @@ class BrowserManager(Process):
                     "BROWSER %i: EXECUTING COMMAND: %s"
                     % (self.browser_params.browser_id, str(command))
                 )
+
+                # Update visit_id in CDP instrumentation so records are tagged correctly
+                if chrome_instrumentation is not None and hasattr(command, "visit_id"):
+                    chrome_instrumentation.set_visit_id(command.visit_id)
 
                 # attempts to perform an action and return an OK signal
                 # if command fails for whatever reason, tell the TaskManager to
@@ -780,6 +832,11 @@ class BrowserManager(Process):
                         self.manager_params,
                         extension_socket,
                     )
+                    # After a page load, collect all instrumentation data via CDP
+                    if chrome_instrumentation is not None and isinstance(
+                        command, (GetCommand, BrowseCommand)
+                    ):
+                        chrome_instrumentation.collect_after_load()
                     self.status_queue.put("OK")
                 except WebDriverException:
                     # We handle WebDriverExceptions separately here because they
@@ -819,6 +876,11 @@ class BrowserManager(Process):
             )
             self.status_queue.put(("FAILED", pickle.dumps(sys.exc_info())))
         finally:
+            if chrome_instrumentation is not None:
+                try:
+                    chrome_instrumentation.close()
+                except Exception:
+                    pass
             if display is not None:
                 display.stop()
             return
