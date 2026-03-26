@@ -373,6 +373,8 @@ class TaskManager:
             self.logger.error("Attempted to execute command on a closed TaskManager")
             raise RuntimeError("Attempted to execute command on a closed TaskManager")
         self._check_failure_status()
+        # Set the current browser_id for collision-free visit_id generation
+        self.storage_controller_handle.storage_controller.browser_id_for_visits = browser.browser_id
         visit_id = self.storage_controller_handle.get_next_visit_id()
         browser.set_visit_id(visit_id)
         if command_sequence.callback:

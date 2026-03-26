@@ -19,6 +19,7 @@ from selenium.webdriver import Firefox
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
+from urllib3.exceptions import ReadTimeoutError
 
 from ..config import BrowserParams, ManagerParams
 from ..socket_interface import ClientSocket
@@ -123,9 +124,72 @@ class GetCommand(BaseCommand):
     def __init__(self, url, sleep):
         self.url = url
         self.sleep = sleep
+        self.max_retries = 3
+        self.retry_delay = 2  # seconds
 
     def __repr__(self):
         return "GetCommand({},{})".format(self.url, self.sleep)
+
+    def _get_alternate_url(self, url: str) -> str:
+        """Generate alternate URL with different protocol (HTTP/HTTPS)"""
+        if url.startswith("https://"):
+            return url.replace("https://", "http://", 1)
+        elif url.startswith("http://"):
+            return url.replace("http://", "https://", 1)
+        return url
+
+    def _is_network_error(self, exception: Exception) -> bool:
+        """Check if exception is a network/DNS resolution error"""
+        error_msg = str(exception).lower()
+        network_errors = [
+            "err_name_not_resolved",
+            "err_connection_failed",
+            "err_connection_refused",
+            "err_connection_reset",
+            "err_connection_aborted",
+            "err_network_unreachable",
+            "err_address_unreachable",
+            "err_net_error",
+            "getaddrinfo failed",
+            "nodename nor servname provided",
+            "name or service not known",
+        ]
+        return any(error in error_msg for error in network_errors)
+
+    def _try_load_url(self, webdriver, url: str, attempt: int = 1) -> bool:
+        """
+        Attempt to load a URL with retry logic.
+        Returns True if successful, False otherwise.
+        """
+        try:
+            logger.info(
+                f"GetCommand: Attempting to load URL (attempt {attempt}): {url}"
+            )
+            webdriver.get(url)
+            logger.info(f"GetCommand: Successfully loaded {url}")
+            return True
+        except TimeoutException:
+            logger.warning(
+                f"GetCommand: Timeout loading {url} (attempt {attempt})"
+            )
+            # TimeoutException is not critical - page may still load
+            return True
+        except ReadTimeoutError:
+            logger.warning(
+                "GetCommand: WebDriver transport timeout loading %s (attempt %d)",
+                url,
+                attempt,
+            )
+            return False
+        except WebDriverException as e:
+            if self._is_network_error(e):
+                logger.warning(
+                    f"GetCommand: Network error loading {url} (attempt {attempt}): {str(e)[:100]}"
+                )
+                return False
+            else:
+                # Re-raise non-network WebDriver exceptions
+                raise
 
     def execute(
         self,
@@ -139,13 +203,44 @@ class GetCommand(BaseCommand):
         if extension_socket is not None:
             extension_socket.send(self.visit_id)
 
-        # Execute a get through selenium
-        try:
-            webdriver.get(self.url)
-        except TimeoutException:
-            pass
+        # Execute a get through selenium with retry logic
+        urls_to_try = [self.url]
+        alternate_url = self._get_alternate_url(self.url)
+        if alternate_url != self.url:
+            urls_to_try.append(alternate_url)
 
-        # Sleep after get returns
+        last_exception = None
+        url_loaded = False
+
+        for url in urls_to_try:
+            for attempt in range(1, self.max_retries + 1):
+                try:
+                    if self._try_load_url(webdriver, url, attempt):
+                        url_loaded = True
+                        break
+                except (WebDriverException, ReadTimeoutError) as e:
+                    # Critical error, skip this URL
+                    last_exception = e
+                    logger.error(
+                        f"GetCommand: Critical error with {url}: {str(e)[:200]}"
+                    )
+                    break
+
+                if attempt < self.max_retries:
+                    logger.debug(
+                        f"GetCommand: Retrying in {self.retry_delay} seconds..."
+                    )
+                    time.sleep(self.retry_delay)
+
+            if url_loaded:
+                break
+
+        if not url_loaded and last_exception:
+            logger.error(
+                f"GetCommand: Failed to load {self.url} after all attempts: {str(last_exception)[:200]}"
+            )
+
+        # Sleep after get attempt
         time.sleep(self.sleep)
 
         # Close modal dialog if exists

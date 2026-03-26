@@ -31,6 +31,9 @@ class CommandSequence:
     by a single browser instance.
     """
 
+    INIT_COMMAND_TIMEOUT = 10
+    FINALIZE_COMMAND_TIMEOUT = 10
+
     def __init__(
         self,
         url: str,
@@ -69,7 +72,9 @@ class CommandSequence:
         self.blocking = blocking
         self.retry_number = retry_number
         self._commands_with_timeout: List[Tuple[BaseCommand, int]] = []
-        self.total_timeout = 0
+        # Total timeout tracks full sequence runtime budget, including
+        # implicit initialize/finalize commands added at execution time.
+        self.total_timeout = self.INIT_COMMAND_TIMEOUT + self.FINALIZE_COMMAND_TIMEOUT
         self.contains_get_or_browse = False
         self.site_rank = site_rank
         self.callback = callback
@@ -185,6 +190,7 @@ class CommandSequence:
         self._commands_with_timeout.append((command, timeout))
 
     def append_command(self, command: BaseCommand, timeout: int = 30) -> None:
+        self.total_timeout += timeout
         self._commands_with_timeout.append((command, timeout))
 
     def mark_done(self, success: bool) -> None:
@@ -196,6 +202,6 @@ class CommandSequence:
         appended by a finalize command
         """
         commands = list(self._commands_with_timeout)
-        commands.insert(0, (InitializeCommand(), 10))
-        commands.append((FinalizeCommand(sleep=5), 10))
+        commands.insert(0, (InitializeCommand(), self.INIT_COMMAND_TIMEOUT))
+        commands.append((FinalizeCommand(sleep=5), self.FINALIZE_COMMAND_TIMEOUT))
         return commands

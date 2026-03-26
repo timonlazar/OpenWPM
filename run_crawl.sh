@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # run_crawl.sh - Runner to start the crawl implemented in `demo.py`
-# This variant always enables the tranco option (passes --tranco to demo.py)
+# This variant always enables tranco and runs Firefox first, then Chrome
 # Usage: ./run_crawl.sh [--headless] [--env PATH] [--credentials PATH]
 set -euo pipefail
 
@@ -18,18 +18,17 @@ Options:
   --env PATH            Path to .env file (default: ./ .env)
   --credentials PATH    Path to Google service account JSON (sets GOOGLE_APPLICATION_CREDENTIALS)
 
-Note: tranco is always enabled.
+Note: tranco is always enabled. The script runs Firefox first, then Chrome.
 EOF
 }
 
-# Always include --tranco
-ARGS=("--tranco")
-
+# Always include --tranco; browser flags are added per sequential run
+COMMON_ARGS=("--tranco")
 # Parse args (no --tranco option; it's always enabled)
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --headless)
-      ARGS+=("--headless")
+      COMMON_ARGS+=("--headless")
       shift
       ;;
     --env)
@@ -68,7 +67,7 @@ if [[ -f "$ENV_FILE" ]]; then
   set +a
   echo "Loaded environment from $ENV_FILE"
 else
-  echo "No .env found at $ENV_FILE — continuing with current environment"
+  echo "No .env found at $ENV_FILE - continuing with current environment"
 fi
 
 # Optionally set GOOGLE_APPLICATION_CREDENTIALS
@@ -82,5 +81,8 @@ if [[ ! -f "$DEMO_PY" ]]; then
   exit 3
 fi
 
-echo "Starting crawl: $PYTHON $DEMO_PY ${ARGS[*]}"
-exec "$PYTHON" "$DEMO_PY" "${ARGS[@]}"
+echo "Starting Firefox crawl: $PYTHON $DEMO_PY ${COMMON_ARGS[*]} --firefox"
+"$PYTHON" "$DEMO_PY" "${COMMON_ARGS[@]}" "--firefox"
+
+echo "Starting Chrome crawl: $PYTHON $DEMO_PY ${COMMON_ARGS[*]} --chrome"
+exec "$PYTHON" "$DEMO_PY" "${COMMON_ARGS[@]}" "--chrome"

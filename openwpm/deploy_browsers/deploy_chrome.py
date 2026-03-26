@@ -133,6 +133,10 @@ def deploy_chrome(
 
     driver = webdriver.Chrome(options=co, service=service)
     driver.set_window_size(*DEFAULT_SCREEN_RES)
+    if hasattr(driver, "command_executor") and hasattr(
+        driver.command_executor, "set_timeout"
+    ):
+        driver.command_executor.set_timeout(manager_params.webdriver_command_timeout)
 
     logger.debug(
         "BROWSER %i: Chrome launched, enabling CDP instrumentation."

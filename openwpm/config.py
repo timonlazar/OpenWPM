@@ -180,6 +180,10 @@ class ManagerParams(DataClassJsonMixin):
     """
 
     num_browsers: int = 1
+    webdriver_command_timeout: int = 240
+    """Timeout in seconds for Selenium command executor HTTP calls.
+    Increase this for slow pages/networks to avoid ReadTimeoutError in webdriver.get.
+    """
     _failure_limit: Optional[int] = None
     """The number of command failures the platform will tolerate before raising a
         `CommandExecutionError` exception. Otherwise the default is set to 2 x the
@@ -325,6 +329,21 @@ def validate_manager_params(manager_params: ManagerParams) -> None:
             ).replace(
                 "Please look at docs/Configuration.md for more information",
                 "failure_limit must be of type `int` or `None`",
+            )
+        )
+
+    if (
+        not isinstance(manager_params.webdriver_command_timeout, int)
+        or manager_params.webdriver_command_timeout <= 0
+    ):
+        raise ConfigError(
+            GENERAL_ERROR_STRING.format(
+                value=manager_params.webdriver_command_timeout,
+                parameter_name="webdriver_command_timeout",
+                params_type="ManagerParams",
+            ).replace(
+                "Please look at docs/Configuration.md for more information",
+                "webdriver_command_timeout must be a positive integer",
             )
         )
 

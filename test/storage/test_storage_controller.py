@@ -67,3 +67,28 @@ def test_arrow_provider(mp_logger: MPLogger, test_values: dt_test_values) -> Non
         t2 = pd.DataFrame({k: [v] for k, v in data.items()})
         # Since t2 doesn't get created schema the inferred types are different
         assert_frame_equal(t1, t2, check_dtype=False)
+
+
+def test_invalid_visit_id_dropped_for_visit_scoped_tables(mp_logger: MPLogger) -> None:
+    structured = MemoryStructuredProvider()
+    controller_handle = StorageControllerHandle(structured, None)
+    controller_handle.launch()
+
+    assert controller_handle.listener_address is not None
+    cs = DataSocket(controller_handle.listener_address, "Test")
+    cs.store_record(
+        "http_requests",
+        INVALID_VISIT_ID,
+        {
+            "visit_id": INVALID_VISIT_ID,
+            "browser_id": 1,
+            "url": "https://example.com",
+        },
+    )
+    cs.close()
+    controller_handle.shutdown()
+
+    handle = structured.handle
+    handle.poll_queue()
+    assert "http_requests" not in handle.storage
+

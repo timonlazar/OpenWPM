@@ -26,6 +26,7 @@ parser.add_argument("--chrome", action="store_true", default=False,
 args = parser.parse_args()
 
 # Determine which browsers to use. Default to Firefox if neither flag is given.
+# Keep deterministic order: Firefox first, then Chrome.
 selected_browsers = []
 if args.firefox:
     selected_browsers.append("firefox")
@@ -82,7 +83,7 @@ if args.tranco:
     print("Loading tranco top sites list...")
     t = tranco.Tranco(cache=True, cache_dir=".tranco")
     latest_list = t.list(date="2025-08-05")
-    sites = ["http://" + x for x in latest_list.top(200)]
+    sites = ["http://" + x for x in latest_list.top(100)]
 
 date_str = datetime.now().strftime("%Y-%m-%d")
 sqlite_path = Path(f"./datadir/crawl-data-{date_str}.sqlite")
@@ -91,16 +92,12 @@ display_mode: Literal["native", "headless", "xvfb"] = "native"
 if args.headless:
     display_mode = "headless"
 
-# Loads the default ManagerParams
-# and NUM_BROWSERS copies of the default BrowserParams
-# One browser instance is created per selected browser type.
-NUM_BROWSERS = len(selected_browsers)
-manager_params = ManagerParams(num_browsers=NUM_BROWSERS)
-browser_params = [BrowserParams(display_mode=display_mode, browser=b) for b in selected_browsers]
-
-# Update browser configuration (use this for per-browser settings)
-for browser_param in browser_params:
-    if browser_param.browser == "chrome":
+# Helper function to create browser_params with instrumentation
+def create_browser_params(browser_type: str, display_mode: str) -> BrowserParams:
+    """Create BrowserParams with proper instrumentation settings for a browser type."""
+    browser_param = BrowserParams(display_mode=display_mode, browser=browser_type)
+    
+    if browser_type == "chrome":
         # Chrome uses CDP-based instrumentation instead of the Firefox WebExtension.
         # HTTP requests/responses, cookies, navigations, JS events, and DNS records
         # are collected via the Chrome instrumentation pipeline.
@@ -122,47 +119,62 @@ for browser_param in browser_params:
         # browser_param.callstack_instrument = True
         # Record DNS resolution
         browser_param.dns_instrument = True
+    
     # Set this value as appropriate for the size of your temp directory
     # if you are running out of space
     browser_param.maximum_profile_size = 50 * (10**20)  # 50 MB = 50 * 2^20 Bytes
-
-# Update TaskManager configuration (use this for crawl-wide settings)
-manager_params.data_directory = Path("./datadir/")
-manager_params.log_path = Path("./datadir/openwpm.log")
-
-# memory_watchdog and process_watchdog are useful for large scale cloud crawls.
-# Please refer to docs/Configuration.md#platform-configuration-options for more information
-# manager_params.memory_watchdog = True
-# manager_params.process_watchdog = True
+    return browser_param
 
 
-# Commands time out by default after 60 seconds
-with TaskManager(
+def run_crawl_for_browser(browser_type: str, sites: list, display_mode: str) -> None:
+    """Run a complete crawl for a single browser type (all sites)."""
+    print(f"\n{'='*60}")
+    print(f"Starting crawl with {browser_type.upper()}")
+    print(f"{'='*60}\n")
+    
+    # Create manager params for this browser
+    manager_params = ManagerParams(num_browsers=1)
+    manager_params.webdriver_command_timeout = 300
+    manager_params.data_directory = Path("./datadir/")
+    manager_params.log_path = Path(f"./datadir/openwpm-{browser_type}.log")
+    
+    # Create browser params
+    browser_param = create_browser_params(browser_type, display_mode)
+    browser_params = [browser_param]
+    
+    # Run crawl with this browser
+    with TaskManager(
         manager_params,
         browser_params,
         storage_provider,
         None,
-) as manager:
-    # Visits the sites
-    for index, site in enumerate(sites):
+    ) as manager:
+        # Visit all sites with this browser
+        for index, site in enumerate(sites):
+            def callback(success: bool, val: str = site, btype: str = browser_type) -> None:
+                print(
+                    f"[{btype.upper()}] CommandSequence for {val} ran "
+                    f"{'successfully' if success else 'unsuccessfully'}"
+                )
 
-        def callback(success: bool, val: str = site) -> None:
-            print(
-                f"CommandSequence for {val} ran {'successfully' if success else 'unsuccessfully'}"
+            # Create command sequence for this site
+            command_sequence = CommandSequence(
+                site,
+                site_rank=index,
+                callback=callback,
             )
 
-        # Parallelize sites over all number of browsers set above.
-        command_sequence = CommandSequence(
-            site,
-            site_rank=index,
-            callback=callback,
-        )
+            # Start by visiting the page
+            command_sequence.append_command(GetCommand(url=site, sleep=3), timeout=180)
+            # Have a look at custom_command.py to see how to implement your own command
+            command_sequence.append_command(AcceptCookieConsentCommand(), timeout=60)
+            command_sequence.append_command(LinkCountingCommand(), timeout=120)
 
-        # Start by visiting the page
-        command_sequence.append_command(GetCommand(url=site, sleep=3), timeout=60)
-        # Have a look at custom_command.py to see how to implement your own command
-        command_sequence.append_command(AcceptCookieConsentCommand(), timeout=30)
-        command_sequence.append_command(LinkCountingCommand())
+            # Execute command sequence
+            manager.execute_command_sequence(command_sequence)
 
-        # Run commands across all browsers (simple parallelization)
-        manager.execute_command_sequence(command_sequence)
+
+# Run crawl for each selected browser (all sites per browser)
+for browser_type in selected_browsers:
+    run_crawl_for_browser(browser_type, sites, display_mode)
+

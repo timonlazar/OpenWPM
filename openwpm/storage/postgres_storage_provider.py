@@ -208,10 +208,13 @@ class PostgresStorageProvider(StructuredStorageProvider):
         try:
             # If the visit was interrupted, record it in the incomplete_visits table
             if interrupted and self.cur is not None:
-                stmt = sql.SQL("INSERT INTO {} ({}) VALUES ({})").format(
+                stmt = sql.SQL(
+                    "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT ({}) DO NOTHING"
+                ).format(
                     sql.Identifier("incomplete_visits"),
                     sql.Identifier("visit_id"),
                     sql.Placeholder(),
+                    sql.Identifier("visit_id"),
                 )
                 success = self._execute_safe(stmt, (visit_id,))
                 if not success:

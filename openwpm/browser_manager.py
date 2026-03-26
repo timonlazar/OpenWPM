@@ -18,6 +18,7 @@ import psutil
 from multiprocess import Process, Queue
 from selenium.common.exceptions import WebDriverException
 from tblib import Traceback, pickling_support
+from urllib3.exceptions import ReadTimeoutError
 
 from .command_sequence import CommandSequence
 from .commands.browser_commands import BrowseCommand, FinalizeCommand, GetCommand
@@ -838,6 +839,17 @@ class BrowserManager(Process):
                     ):
                         chrome_instrumentation.collect_after_load()
                     self.status_queue.put("OK")
+                except ReadTimeoutError:
+                    tb = traceback.format_exception(*sys.exc_info())
+                    extra = parse_traceback_for_sentry(tb)
+                    extra["exception"] = tb[-1]
+                    self.logger.error(
+                        "BROWSER %i: ReadTimeoutError while executing command"
+                        % self.browser_params.browser_id,
+                        exc_info=True,
+                        extra=extra,
+                    )
+                    self.status_queue.put(("FAILED", pickle.dumps(sys.exc_info())))
                 except WebDriverException:
                     # We handle WebDriverExceptions separately here because they
                     # are quite common, and we often still have a handle to the

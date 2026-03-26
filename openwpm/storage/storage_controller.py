@@ -36,6 +36,7 @@ BATCH_COMMIT_TIMEOUT = 30  # commit a batch if no new records for N seconds
 
 STATUS_UPDATE_INTERVAL = 5  # seconds
 INVALID_VISIT_ID = VisitId(-1)
+TABLES_WITHOUT_VISIT_ID = {TableName("task"), TableName("crawl")}
 
 
 class StorageController:
@@ -75,6 +76,9 @@ class StorageController:
         self.store_record_tasks: DefaultDict[VisitId, list[Task[None]]] = defaultdict(
             list
         )
+        self.browser_id_for_visits: BrowserId = BrowserId(0)
+        """Current browser_id for encoding into visit_ids.
+        Set by StorageControllerHandle when initializing."""
         """Contains all store_record tasks for a given visit_id"""
         self.finalize_tasks: list[tuple[VisitId, Optional[Task[None]], bool]] = []
         """Contains all information required for update_completion_queue to work
@@ -150,6 +154,14 @@ class StorageController:
                 )
                 continue
 
+            if data["visit_id"] is None:
+                self.logger.warning(
+                    "Skipping record for table %s: visit_id is null in record %r",
+                    record_type,
+                    data,
+                )
+                continue
+
             visit_id = VisitId(data["visit_id"])
 
             if record_type == RECORD_TYPE_META:
@@ -163,8 +175,16 @@ class StorageController:
         self, table_name: TableName, visit_id: VisitId, data: Dict[str, Any]
     ) -> None:
         if visit_id == INVALID_VISIT_ID:
-            # Hacking around the fact that task and crawl don't have a VisitID
-            del data["visit_id"]
+            if table_name in TABLES_WITHOUT_VISIT_ID:
+                # task/crawl are global crawl metadata and intentionally have no visit_id column.
+                del data["visit_id"]
+            else:
+                self.logger.warning(
+                    "Dropping record for table %s with invalid visit_id=%s",
+                    table_name,
+                    visit_id,
+                )
+                return
         # Turning these into task to be able to have them complete without blocking the socket
         self.store_record_tasks[visit_id].append(
             asyncio.create_task(
@@ -444,14 +464,24 @@ class StorageControllerHandle:
         )
 
     def get_next_visit_id(self) -> VisitId:
-        """Generate visit id as randomly generated positive integer less than 2^53.
+        """Generate collision-free visit_id by encoding browser_id (upper 32 bits)
+        and random component (lower 21 bits) into a single 53-bit integer.
 
         Parquet can support integers up to 64 bits, but Javascript can only
         represent integers up to 53 bits:
         https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Number/MAX_SAFE_INTEGER
         Thus, we cap these values at 53 bits.
+        
+        Structure: visit_id = (browser_id << 21) | random_21_bits
+        This ensures that visits from different browsers never collide,
+        even if generated in separate processes or TaskManager instances.
         """
-        return VisitId(random.getrandbits(53))
+        # browser_id is 32-bit, random component is 21-bit (32+21=53)
+        # The browser_id is stored in upper bits to guarantee uniqueness per browser
+        browser_id = self.storage_controller.browser_id_for_visits
+        random_part = random.getrandbits(21)
+        visit_id = (browser_id << 21) | random_part
+        return VisitId(visit_id)
 
     def get_next_browser_id(self) -> BrowserId:
         """Generate crawl id as randomly generated positive 32bit integer

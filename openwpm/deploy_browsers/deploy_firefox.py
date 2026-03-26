@@ -151,6 +151,10 @@ def deploy_firefox(
             log_output=open(webdriver_interceptor.fifo, "w"),
         ),
     )
+    if hasattr(driver, "command_executor") and hasattr(
+        driver.command_executor, "set_timeout"
+    ):
+        driver.command_executor.set_timeout(manager_params.webdriver_command_timeout)
 
     # Install extension
     ext_loc = os.path.join(root_dir, "../../Extension/openwpm.xpi")
