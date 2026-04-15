@@ -1,4 +1,5 @@
 import logging
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -71,6 +72,20 @@ def deploy_chrome(
     if display_mode == "headless":
         co.add_argument("--headless=new")
         co.add_argument(f"--window-size={DEFAULT_SCREEN_RES[0]},{DEFAULT_SCREEN_RES[1]}")
+        # Helps avoid GPU-related startup issues on minimal VM images.
+        co.add_argument("--disable-gpu")
+
+    # In VM/container/root contexts Chrome often exits immediately without these.
+    if os.geteuid() == 0:
+        logger.warning(
+            "BROWSER %i: Running as root, enabling --no-sandbox startup flags for Chrome.",
+            browser_params.browser_id,
+        )
+        co.add_argument("--no-sandbox")
+        co.add_argument("--disable-setuid-sandbox")
+
+    # Work around low /dev/shm limits commonly found in VMs/containers.
+    co.add_argument("--disable-dev-shm-usage")
 
     # Privacy / speed optimisations
     co.add_argument("--no-first-run")
@@ -87,6 +102,8 @@ def deploy_chrome(
     co.add_argument("--use-mock-keychain")
     # Required for CDP event listeners to work correctly
     co.add_argument("--remote-allow-origins=*")
+    # Let Chrome pick a free DevTools port and avoid port reuse collisions.
+    co.add_argument("--remote-debugging-port=0")
 
     # Enable performance logs so ChromeInstrumentation can consume
     # Network.* events (including redirect chains and response bodies).
@@ -125,11 +142,22 @@ def deploy_chrome(
 
     # Try to locate chromedriver automatically via shutil.which or selenium's built-in manager
     chromedriver_path = shutil.which("chromedriver")
+    chromedriver_log = (
+        manager_params.data_directory
+        / f"chromedriver-{browser_params.browser_id}.log"
+    )
     if chromedriver_path:
-        service = Service(executable_path=chromedriver_path)
+        service = Service(
+            executable_path=chromedriver_path,
+            service_args=["--verbose"],
+            log_output=str(chromedriver_log),
+        )
     else:
         # Fall back to selenium's built-in driver management (selenium >= 4.6)
-        service = Service()
+        service = Service(
+            service_args=["--verbose"],
+            log_output=str(chromedriver_log),
+        )
 
     driver = webdriver.Chrome(options=co, service=service)
     driver.set_window_size(*DEFAULT_SCREEN_RES)
