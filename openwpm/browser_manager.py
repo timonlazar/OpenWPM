@@ -359,6 +359,7 @@ class BrowserManagerHandle:
             {
                 "visit_id": self.curr_visit_id,
                 "browser_id": self.browser_id,
+                "browser_type": (self.browser_params.browser or "").lower() or None,
                 "site_url": command_sequence.url,
                 "site_rank": command_sequence.site_rank,
             },

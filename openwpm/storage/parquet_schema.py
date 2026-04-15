@@ -31,6 +31,7 @@ PQ_SCHEMAS["crawl"] = pa.schema(fields)
 fields = [
     pa.field("visit_id", pa.int64(), nullable=False),
     pa.field("browser_id", pa.uint32(), nullable=False),
+    pa.field("browser_type", pa.string()),
     pa.field("instance_id", pa.uint32(), nullable=False),
     pa.field("site_url", pa.string(), nullable=False),
     pa.field("site_rank", pa.uint32()),

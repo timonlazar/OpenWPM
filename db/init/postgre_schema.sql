@@ -28,9 +28,13 @@ CREATE TABLE IF NOT EXISTS crawl (
 CREATE TABLE IF NOT EXISTS site_visits (
                                            visit_id BIGINT PRIMARY KEY,
                                            browser_id BIGINT NOT NULL REFERENCES crawl(browser_id),
+    browser_type TEXT,
     site_url TEXT NOT NULL,
     site_rank BIGINT
     );
+
+ALTER TABLE IF EXISTS site_visits
+    ADD COLUMN IF NOT EXISTS browser_type TEXT;
 
 CREATE TABLE IF NOT EXISTS crawl_history (
                                              browser_id BIGINT,

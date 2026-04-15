@@ -42,6 +42,7 @@ def generate_test_values() -> dt_test_values:
     fields = {
         "visit_id": random.randint(0, 2**63 - 1),
         "browser_id": random.randint(0, 2**31 - 1),
+        "browser_type": random.choice(["firefox", "chrome"]),
         "site_url": random_word(12),
         "site_rank": random.randint(0, 2**31 - 1),
     }

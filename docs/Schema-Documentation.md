@@ -23,6 +23,7 @@ update the description of the field here.
 | ----------- | ------ | -------- | ----------- |
 | visit_id    | int64  | False    |             |
 | crawl_id    | uint32 | False    |             |
+| browser_type | string |          | Browser engine used for this visit (`firefox` or `chrome`) |
 | instance_id | uint32 | False    |             |
 | site_url    | string | False    |             |
 | site_rank   | uint32 |          |
