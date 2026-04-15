@@ -9,6 +9,7 @@ from openwpm.commands.utils.cookie_selectors import generate_xpaths
 
 
 class AcceptCookieConsentCommand(BaseCommand):
+    MAX_RUNTIME_SECONDS = 10
 
     CMP_SELECTORS = [
         "//button[@id='onetrust-accept-btn-handler']",
@@ -17,8 +18,7 @@ class AcceptCookieConsentCommand(BaseCommand):
     ]
 
     def execute(self, webdriver, browser_params, manager_params, extension_socket):
-        start_time = time.time()
-        MAX_RUNTIME = 3
+        start_time = time.monotonic()
 
         try:
             current_url = webdriver.current_url
@@ -29,30 +29,22 @@ class AcceptCookieConsentCommand(BaseCommand):
             rule = self.find_matching_rule(domain)
 
             for xpath in self.CMP_SELECTORS:
-                runtime = time.time() - start_time
-                if runtime > MAX_RUNTIME:
+                runtime = time.monotonic() - start_time
+                if runtime > self.MAX_RUNTIME_SECONDS:
                     print(f"[CookieConsent] TIMEOUT during CMP selectors | url={current_url} | runtime={runtime:.2f}s")
                     return
                 if self.try_click_fast(webdriver, xpath):
-                    # account for click_and_wait post-click sleep
-                    runtime = time.time() - start_time
-                    if runtime > MAX_RUNTIME:
-                        print(f"[CookieConsent] TIMEOUT after CMP click | url={current_url} | runtime={runtime:.2f}s")
-                        return
+                    runtime = time.monotonic() - start_time
                     print(f"[CookieConsent] CMP selector matched | url={current_url} | xpath={xpath} | runtime={runtime:.2f}s")
                     return
 
             for xpath in generate_xpaths():
-                runtime = time.time() - start_time
-                if runtime > MAX_RUNTIME:
+                runtime = time.monotonic() - start_time
+                if runtime > self.MAX_RUNTIME_SECONDS:
                     print(f"[CookieConsent] TIMEOUT during keyword fallback | url={current_url} | runtime={runtime:.2f}s")
                     return
                 if self.try_click_fast(webdriver, xpath):
-                    # account for click_and_wait post-click sleep
-                    runtime = time.time() - start_time
-                    if runtime > MAX_RUNTIME:
-                        print(f"[CookieConsent] TIMEOUT after keyword click | url={current_url} | runtime={runtime:.2f}s")
-                        return
+                    runtime = time.monotonic() - start_time
                     print(f"[CookieConsent] Keyword selector matched | url={current_url} | xpath={xpath} | runtime={runtime:.2f}s")
                     return
 
@@ -62,7 +54,7 @@ class AcceptCookieConsentCommand(BaseCommand):
             else:
                 print(f"[CookieConsent] No domain rule matched for {domain}")
 
-            total_runtime = time.time() - start_time
+            total_runtime = time.monotonic() - start_time
             print(f"[CookieConsent] No consent button found | url={current_url} | runtime={total_runtime:.2f}s")
 
         except Exception as e:
